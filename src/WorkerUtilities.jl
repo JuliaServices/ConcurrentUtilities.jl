@@ -56,7 +56,7 @@ looking at `WorkerUtilities.WORKER_TASKS`.
 """
 function init(nworkers=Threads.nthreads()-1)
     maxthreadid = nworkers + 1
-    tids = nworkers == 1 ? (1:1) : 2:maxthreadid
+    tids = Threads.nthreads() == 1 ? (1:1) : 2:maxthreadid
     resize!(WORKER_TASKS, nworkers)
     Threads.@threads for tid in 1:maxthreadid
         if tid in tids
