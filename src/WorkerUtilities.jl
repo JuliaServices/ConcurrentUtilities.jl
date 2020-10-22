@@ -1,5 +1,7 @@
 module WorkerUtilities
 
+export Lockable
+
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
 
@@ -92,16 +94,16 @@ different task/thread, wait for it to become available.
 When this function returns, the `lock` has been released, so the caller should
 not attempt to `unlock` it.
 """
-function lock(f, l::Lockable)
+function Base.lock(f, l::Lockable)
     lock(l.lock) do
         f(l.value)
     end
 end
 
 # implement the rest of the Lock interface on Lockable
-islocked(l::Lockable) = islocked(l.lock)
-lock(l::Lockable) = lock(l.lock)
-trylock(l::Lockable) = trylock(l.lock)
-unlock(l::Lockable) = unlock(l.lock)
+Base.islocked(l::Lockable) = islocked(l.lock)
+Base.lock(l::Lockable) = lock(l.lock)
+Base.trylock(l::Lockable) = trylock(l.lock)
+Base.unlock(l::Lockable) = unlock(l.lock)
 
 end # module
