@@ -5,7 +5,8 @@ using Test, WorkerUtilities
     @testset "WorkerUtilities.@spawn" begin
 
         WorkerUtilities.init()
-        @test fetch(WorkerUtilities.@spawn(Threads.threadid())) != 1
+        threadid = fetch(WorkerUtilities.@spawn(Threads.threadid()))
+        @test Threads.nthreads() == 1 ? (threadid == 1) : (threadid != 1)
         @test WorkerUtilities.@spawn(false, 1 + 1).storage === nothing
 
     end # @testset "WorkerUtilities.@spawn"
