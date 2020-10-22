@@ -1,35 +1,37 @@
 
-# ExpiringCaches.jl
+# WorkerUtilities.jl
 
-*A Dict type with expiring values and a `@cacheable` macro to cache function results in an expiring cache*
+*Utilities for working with multithreaded workers for Julia services and applications*
 
 ## Installation
 
-The package is registered in the [`General`](https://github.com/JuliaRegistries/General) registry and so can be installed at the REPL with `] add ExpiringCaches`.
+The package is registered in the [`General`](https://github.com/JuliaRegistries/General) registry and so can be installed at the REPL with `] add WorkerUtilities`.
 
 ## Usage
 
 
-### `Cache`
-    ExpiringCaches.Cache{K, V}(timeout::Dates.Period)
+### `WorkerUtilities.@spawn`
+  WorkerUtilities.@spawn expr
+  WorkerUtilities.@spawn passthroughstorage expr
 
-Create a thread-safe, expiring cache where values older than `timeout`
-are "invalid" and will be deleted.
+Similar to `Threads.@spawn`, schedule and execute a task (given by `expr`)
+that will be run on a "background worker" (see [`WorkerUtilities.init`]((@ref))).
 
-An `ExpiringCaches.Cache` is an `AbstractDict` and tries to emulate a regular
-`Dict` in all respects. It is most useful when the cost of retrieving or
-calculating a value is expensive and is able to be "cached" for a certain
-amount of time. To avoid using the cache (i.e. to invalidate the cache),
-a `Cache` supports the `delete!` and `empty!` methods to remove values
-manually.
+In the 2-argument invocation, `passthroughstorage` controls whether the task-local storage of the
+`current_task()` should be "passed through" to the spawned task.
 
+### `Lockable`
+    
+  Lockable(value, lock = ReentrantLock())
 
-### `@cacheable`
-    @cacheable timeout function_definition::ReturnType
+Creates a `Lockable` object that wraps `value` and
+associates it with the provided `lock`.
 
-For a function definition (`function_definition`, either short-form
-or full), create an `ExpiringCaches.Cache` and store results for `timeout`
-(hashed by the exact input arguments obviously).
+  lock(f::Function, l::Lockable)
 
-Note that the function definition _MUST_ include the `ReturnType` declartion
-as this is used as the value (`V`) type in the `Cache`.# WorkerUtilities.jl
+Acquire the lock associated with `l`, execute `f` with the lock held,
+and release the lock when `f` returns. `f` will receive one positional
+argument: the value wrapped by `l`. If the lock is already locked by a
+different task/thread, wait for it to become available.
+When this function returns, the `lock` has been released, so the caller should
+not attempt to `unlock` it.
