@@ -57,7 +57,7 @@ looking at `WorkerUtilities.WORKER_TASKS`.
 function init(nworkers=Threads.nthreads()-1)
     maxthreadid = nworkers + 1
     tids = Threads.nthreads() == 1 ? (1:1) : 2:maxthreadid
-    resize!(WORKER_TASKS, nworkers)
+    resize!(WORKER_TASKS, max(nworkers, 1))
     Threads.@threads for tid in 1:maxthreadid
         if tid in tids
             WORKER_TASKS[tid == 1 ? 1 : (tid - 1)] = Base.@async begin
