@@ -43,4 +43,32 @@ using Test, WorkerUtilities
         end
     end # @testset "Lockable"
 
+    @testset "OrderedSynchronizer" begin
+
+        x = OrderedSynchronizer()
+        A = Vector{Int}(undef, 10)
+        @sync for i = 10:-1:1
+            @async put!(x, i) do
+                A[i] = i
+            end
+        end
+
+        reset!(x)
+        A = Vector{Int}(undef, 10)
+        @sync for i = 1:10
+            @async put!(x, i) do
+                A[i] = i
+            end
+        end
+
+        reset!(x)
+        A = Vector{Int}(undef, 10)
+        @sync for i in (2, 1, 4, 3, 6, 5, 8, 7, 10, 9)
+            @async put!(x, i) do
+                A[i] = i
+            end
+        end
+
+    end
+
 end # @testset "WorkerUtilities"
