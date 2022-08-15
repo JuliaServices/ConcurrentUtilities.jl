@@ -1,6 +1,6 @@
 module WorkerUtilities
 
-export Lockable
+export Lockable, OrderedSynchronizer, reset!
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
@@ -105,5 +105,73 @@ Base.islocked(l::Lockable) = islocked(l.lock)
 Base.lock(l::Lockable) = lock(l.lock)
 Base.trylock(l::Lockable) = trylock(l.lock)
 Base.unlock(l::Lockable) = unlock(l.lock)
+
+"""
+    OrderedSynchronizer(i=1)
+
+A threadsafe synchronizer that allows ensuring concurrent work is done
+in a specific order. The `OrderedSynchronizer` is initialized with an
+integer `i` that represents the current "order" of the synchronizer.
+
+Work is "scheduled" by calling `put!(f, x, i)`, where `f` is a function
+that will be called like `f()` when the synchronizer is at order `i`,
+and will otherwise wait until other calls to `put!` have finished
+to bring the synchronizer's state to `i`. Once `f()` is called, the
+synchronizer's state is incremented by 1 and any waiting `put!` calls
+check to see if it's their turn to execute.
+
+A synchronizer's state can be reset to a specific value (1 by default)
+by calling `reset!(x, i)`.
+"""
+mutable struct OrderedSynchronizer
+    cond::Threads.Condition
+    i::Int
+end
+
+OrderedSynchronizer(i=1) = OrderedSynchronizer(Threads.Condition(), i)
+
+"""
+    reset!(x::OrderedSynchronizer, i=1)
+
+Reset the state of `x` to `i`.
+"""
+function reset!(x::OrderedSynchronizer, i=1)
+    Base.@lock x.cond begin
+        x.i = i
+    end
+end
+
+"""
+    put!(f::Function, x::OrderedSynchronizer, i::Int)
+
+Schedule `f` to be called when `x` is at order `i`. Note that `put!`
+will block until `f` is executed. The typical usage involves something
+like:
+
+```julia
+x = OrderedSynchronizer()
+@sync for i = 1:N
+    Threads.@spawn begin
+        # do some concurrent work
+        # once work is done, schedule synchronization
+        put!(x, i) do
+            # report back result of concurrent work
+            # won't be executed until all `i-1` calls to `put!` have already finished
+        end
+    end
+end
+```
+"""
+function Base.put!(f, x::OrderedSynchronizer, i)
+    Base.@lock x.cond begin
+        # wait until we're ready to execute f
+        while x.i != i
+            wait(x.cond)
+        end
+        f()
+        x.i += 1
+        notify(x.cond)
+    end
+end
 
 end # module
