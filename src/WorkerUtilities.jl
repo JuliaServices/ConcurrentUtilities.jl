@@ -124,11 +124,12 @@ A synchronizer's state can be reset to a specific value (1 by default)
 by calling `reset!(x, i)`.
 """
 mutable struct OrderedSynchronizer
+    coordinating_task::Task
     cond::Threads.Condition
     i::Int
 end
 
-OrderedSynchronizer(i=1) = OrderedSynchronizer(Threads.Condition(), i)
+OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i)
 
 """
     reset!(x::OrderedSynchronizer, i=1)
@@ -142,7 +143,7 @@ function reset!(x::OrderedSynchronizer, i=1)
 end
 
 """
-    put!(f::Function, x::OrderedSynchronizer, i::Int)
+    put!(f::Function, x::OrderedSynchronizer, i::Int, incr::Int=1)
 
 Schedule `f` to be called when `x` is at order `i`. Note that `put!`
 will block until `f` is executed. The typical usage involves something
@@ -154,22 +155,29 @@ x = OrderedSynchronizer()
     Threads.@spawn begin
         # do some concurrent work
         # once work is done, schedule synchronization
-        put!(x, i) do
+        put!(x, \$i) do
             # report back result of concurrent work
             # won't be executed until all `i-1` calls to `put!` have already finished
         end
     end
 end
 ```
+
+The `incr` argument controls how much the synchronizer's state is
+incremented after `f` is called. By default, `incr` is 1.
 """
-function Base.put!(f, x::OrderedSynchronizer, i)
+function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
     Base.@lock x.cond begin
         # wait until we're ready to execute f
         while x.i != i
             wait(x.cond)
         end
-        f()
-        x.i += 1
+        try
+            f()
+        catch e
+            Base.throwto(x.coordinating_task, e)
+        end
+        x.i += incr
         notify(x.cond)
     end
 end
