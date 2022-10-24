@@ -52,6 +52,7 @@ using Test, WorkerUtilities
                 A[i] = i
             end
         end
+        @test A == 1:10
 
         reset!(x)
         A = Vector{Int}(undef, 10)
@@ -60,6 +61,7 @@ using Test, WorkerUtilities
                 A[i] = i
             end
         end
+        @test A == 1:10
 
         reset!(x)
         A = Vector{Int}(undef, 10)
@@ -68,6 +70,16 @@ using Test, WorkerUtilities
                 A[i] = i
             end
         end
+        @test A == 1:10
+
+        reset!(x)
+        A = Vector{Int}(undef, 4)
+        @sync for (i, j) in zip((2, 1, 4, 3), (3, 1, 7, 5))
+            @async put!(x, j, 2) do
+                A[i] = j
+            end
+        end
+        @test A == [1, 3, 5, 7]
 
     end
 
