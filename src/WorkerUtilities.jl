@@ -1,6 +1,6 @@
 module WorkerUtilities
 
-export Lockable, OrderedSynchronizer, reset!
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
@@ -180,6 +180,75 @@ function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
         x.i += incr
         notify(x.cond)
     end
+end
+
+mutable struct ReadWriteLock
+    writelock::ReentrantLock
+    @atomic waitingwriter::Union{Nothing, Task}
+    readwait::Base.ThreadSynchronizer
+    @atomic readercount::Int
+    @atomic readerwait::Int
+end
+
+ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), 0, 0)
+
+const MaxReaders = 1 << 30
+
+function readlock(rw::ReadWriteLock)
+    if (@atomic :acquire_release rw.readercount += 1) < 0
+        # A writer is active or pending, so we need to wait
+        Base.@lock rw.readwait wait(rw.readwait)
+    end
+    return
+end
+
+function readunlock(rw::ReadWriteLock)
+    if (@atomic :acquire_release rw.readercount -= 1) < 0
+        # there's a pending write, check if we're the last reader
+        if (@atomic :acquire_release rw.readerwait -= 1) == 0
+            # Last reader, wake up the writer.
+            schedule(rw.waitingwriter)
+        end
+    end
+    return
+end
+
+function Base.lock(rw::ReadWriteLock)
+    lock(rw.writelock) # only a single writer allowed at a time
+    # ok, here's how we do this: we subtract MaxReaders from readercount
+    # to make readercount negative; this will prevent any further readers
+    # from locking, while maintaining our actual reader count so we
+    # can track when we're able to write
+    r = (@atomic :acquire_release rw.readercount -= MaxReaders) + MaxReaders
+    # if r == 0, that means there were no readers,
+    # so we can proceed directly with the write lock
+    # if r == 1, this is an interesting case because there's only 1 reader
+    # and we might be racing to acquire the write lock and the reader
+    # unlocking; so we _also_ atomically set and check readerwait;
+    # if readerwait == 0, then the reader won the race and decremented readerwait
+    # to -1, and we increment by 1 to 0, so we know the reader is done and can proceed
+    # without waiting. If _we_ win the race, then we'll continue to waiting
+    # and the reader will decrement and then schedule us
+    if r != 0 && (@atomic :acquire_release rw.readerwait += r) != 0
+        # otherwise, there are readers, so we need to wait for them to finish
+        # we do this by setting ourselves as the waiting writer
+        # and wait for the last reader to re-schedule us
+        @atomic rw.waitingwriter = current_task()
+        wait()
+    end
+    return
+end
+
+Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
+
+function Base.unlock(rw::ReadWriteLock)
+    r = (@atomic :acquire_release rw.readercount += MaxReaders)
+    if r > 0
+        # wake up waiting readers
+        Base.@lock rw.readwait notify(rw.readwait)
+    end
+    unlock(rw.writelock)
+    return
 end
 
 end # module
