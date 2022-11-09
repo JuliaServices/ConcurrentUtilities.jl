@@ -109,6 +109,7 @@ using Test, WorkerUtilities
             put!(c, nothing)
             lock(rw)
             take!(c)
+            @test islocked(rw)
             unlock(rw)
             true
         end
@@ -121,6 +122,20 @@ using Test, WorkerUtilities
 
         println("test write is blocked until readers done")
         readlock(rw)
+        # readlock doesn't count as "locked"
+        @test !islocked(rw)
+        # start another reader
+        secondReaderLocked = Ref(false)
+        c = Channel()
+        r2 = @async begin
+            put!(c, nothing)
+            readlock(rw)
+            secondReaderLocked[] = true
+            take!(c)
+            readunlock(rw)
+            true
+        end
+        take!(c)
         wc = Channel()
         t = @async begin
             put!(wc, nothing)
@@ -130,47 +145,45 @@ using Test, WorkerUtilities
             true
         end
         take!(wc)
+        # write task not done
         @test !istaskdone(t)
-        c = Channel()
-        r2 = errormonitor(@async begin
-            put!(c, nothing)
-            readlock(rw)
-            take!(c)
-            readunlock(rw)
-            true
-        end)
-        take!(c)
-        c2 = Channel()
-        @test !istaskdone(t)
+        # first reader not done
         @test !istaskdone(r2)
+        # but first reader did lock
+        @test secondReaderLocked[]
+        # start a third reader
+        thirdReaderLocked = Ref(false)
+        c2 = Channel()
         r3 = @async begin
             put!(c2, nothing)
             readlock(rw)
+            thirdReaderLocked[] = true
             take!(c2)
             readunlock(rw)
             true
         end
-        println("here 1")
         take!(c2)
-        println("here 1.1")
+        # no tasks have finished yet
         @test !istaskdone(t)
         @test !istaskdone(r2)
         @test !istaskdone(r3)
+        # but third reader didn't lock because it's blocked
+        # on a _pending_ write
+        @test !thirdReaderLocked[]
         # unblock r2
-        println("here 1.2")
         put!(c, nothing)
-        println("here 1.3")
+        # it should finish
         @test fetch(r2)
-        println("here 1.4")
-        # unblock r3
-        put!(c2, nothing)
-        println("here 1.5")
-        @test fetch(r3)
-        println("here 1.6")
-        @test !istaskdone(t)
+        # now unlock 1st reader so write can happen
         readunlock(rw)
+        # write task should finish
         put!(wc, nothing)
         @test fetch(t)
+        # now that write has finished, r3 should have lock
+        put!(c2, nothing)
+        @test thirdReaderLocked[]
+        @test fetch(r3)
+        @test !islocked(rw)
     end
 
 end # @testset "WorkerUtilities"

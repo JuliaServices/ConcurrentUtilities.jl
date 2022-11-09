@@ -225,6 +225,8 @@ function Base.lock(rw::ReadWriteLock)
     return
 end
 
+Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
+
 function Base.unlock(rw::ReadWriteLock)
     r = (@atomic rw.readercount += MaxReaders)
     if r > 0
