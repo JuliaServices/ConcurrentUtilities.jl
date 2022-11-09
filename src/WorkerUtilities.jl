@@ -1,6 +1,6 @@
 module WorkerUtilities
 
-export Lockable, OrderedSynchronizer, reset!
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
@@ -180,6 +180,59 @@ function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
         x.i += incr
         notify(x.cond)
     end
+end
+
+mutable struct ReadWriteLock
+    writelock::ReentrantLock
+    waitingwriter::Union{Nothing, Task} # guarded by writelock
+    readwait::Base.ThreadSynchronizer
+    @atomic readercount::Int
+    @atomic readerwait::Int
+end
+
+ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), 0, 0)
+
+const MaxReaders = 1 << 30
+
+function readlock(rw::ReadWriteLock)
+    if (@atomic rw.readercount += 1) < 0
+        # A writer is pending, wait for it.
+        Base.@lock rw.readwait wait(rw.readwait)
+    end
+    return
+end
+
+function readunlock(rw::ReadWriteLock)
+    if (@atomic rw.readercount -= 1) < 0
+        # there's a pending write, check if we're the last reader
+        @assert rw.waitingwriter !== nothing
+        if (@atomic rw.readerwait -= 1) == 0
+            # Last reader, wake up the writer.
+            schedule(rw.waitingwriter)
+        end
+    end
+    return
+end
+
+function Base.lock(rw::ReadWriteLock)
+    lock(rw.writelock)
+    r = (@atomic rw.readercount -= MaxReaders) + MaxReaders
+    if r != 0 && (@atomic rw.readerwait += r) != 0
+        # wait for active readers
+        rw.waitingwriter = current_task()
+        wait()
+    end
+    return
+end
+
+function Base.unlock(rw::ReadWriteLock)
+    r = (@atomic rw.readercount += MaxReaders)
+    if r > 0
+        # wake up waiting readers
+        Base.@lock rw.readwait notify(rw.readwait)
+    end
+    unlock(rw.writelock)
+    return
 end
 
 end # module

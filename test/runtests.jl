@@ -83,4 +83,94 @@ using Test, WorkerUtilities
 
     end
 
+    @testset "ReadWriteLock" begin
+        rw = ReadWriteLock()
+        println("test read is blocked while writing")
+        lock(rw)
+        c = Channel()
+        t = @async begin
+            put!(c, nothing)
+            readlock(rw)
+            take!(c)
+            readunlock(rw)
+            true
+        end
+        take!(c)
+        @test !istaskdone(t)
+        unlock(rw)
+        @test !istaskdone(t)
+        put!(c, nothing)
+        @test fetch(t)
+
+        println("test write is blocked until reader done")
+        readlock(rw)
+        c = Channel()
+        t = @async begin
+            put!(c, nothing)
+            lock(rw)
+            take!(c)
+            unlock(rw)
+            true
+        end
+        take!(c)
+        @test !istaskdone(t)
+        readunlock(rw)
+        @test !istaskdone(t)
+        put!(c, nothing)
+        @test fetch(t)
+
+        println("test write is blocked until readers done")
+        readlock(rw)
+        wc = Channel()
+        t = @async begin
+            put!(wc, nothing)
+            lock(rw)
+            take!(wc)
+            unlock(rw)
+            true
+        end
+        take!(wc)
+        @test !istaskdone(t)
+        c = Channel()
+        r2 = errormonitor(@async begin
+            put!(c, nothing)
+            readlock(rw)
+            take!(c)
+            readunlock(rw)
+            true
+        end)
+        take!(c)
+        c2 = Channel()
+        @test !istaskdone(t)
+        @test !istaskdone(r2)
+        r3 = @async begin
+            put!(c2, nothing)
+            readlock(rw)
+            take!(c2)
+            readunlock(rw)
+            true
+        end
+        println("here 1")
+        take!(c2)
+        println("here 1.1")
+        @test !istaskdone(t)
+        @test !istaskdone(r2)
+        @test !istaskdone(r3)
+        # unblock r2
+        println("here 1.2")
+        put!(c, nothing)
+        println("here 1.3")
+        @test fetch(r2)
+        println("here 1.4")
+        # unblock r3
+        put!(c2, nothing)
+        println("here 1.5")
+        @test fetch(r3)
+        println("here 1.6")
+        @test !istaskdone(t)
+        readunlock(rw)
+        put!(wc, nothing)
+        @test fetch(t)
+    end
+
 end # @testset "WorkerUtilities"
