@@ -81,6 +81,28 @@ using Test, WorkerUtilities
         end
         @test A == [1, 3, 5, 7]
 
+        reset!(x)
+        ref = Ref(false)
+        ch = Channel(0)
+        t = @async begin
+            put!(ch, true)
+            put!(x, 2) do
+                ref[] = true
+            end
+        end
+        # wait until the task is blocked
+        take!(ch)
+        # test put! hasn't run yet and task isn't done
+        @test !ref[]
+        @test !istaskdone(t)
+        # cancel put! by notifying with error
+        Base.notify_error(x, ArgumentError("test"))
+        e = try
+            fetch(t)
+        catch e
+            e.task.result
+        end
+        @test e == ArgumentError("test")
     end
 
     @testset "ReadWriteLock" begin

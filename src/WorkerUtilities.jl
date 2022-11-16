@@ -142,6 +142,12 @@ function reset!(x::OrderedSynchronizer, i=1)
     end
 end
 
+function Base.notify_error(x::OrderedSynchronizer, e)
+    Base.@lock x.cond begin
+        Base.notify_error(x.cond, e)
+    end
+end
+
 """
     put!(f::Function, x::OrderedSynchronizer, i::Int, incr::Int=1)
 
