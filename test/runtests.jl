@@ -95,14 +95,14 @@ using Test, WorkerUtilities
         # test put! hasn't run yet and task isn't done
         @test !ref[]
         @test !istaskdone(t)
-        # cancel put! by notifying with error
-        Base.notify_error(x, ArgumentError("test"))
+        # cancel put! by closing the sync
+        close(x)
         e = try
             fetch(t)
         catch e
             e.task.result
         end
-        @test e == ArgumentError("test")
+        @test e == WorkerUtilities.closed_exception()
     end
 
     @testset "ReadWriteLock" begin
