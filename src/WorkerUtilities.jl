@@ -127,9 +127,10 @@ mutable struct OrderedSynchronizer
     coordinating_task::Task
     cond::Threads.Condition
     i::Int
+    @atomic closed::Bool
 end
 
-OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i)
+OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i, false)
 
 """
     reset!(x::OrderedSynchronizer, i=1)
@@ -139,6 +140,26 @@ Reset the state of `x` to `i`.
 function reset!(x::OrderedSynchronizer, i=1)
     Base.@lock x.cond begin
         x.i = i
+        @atomic :monotonic x.closed = false
+    end
+end
+
+function Base.close(x::OrderedSynchronizer, excp::Exception=closed_exception())
+    Base.@lock x.cond begin
+        @atomic :monotonic x.closed = true
+        Base.notify_error(x.cond, excp)
+    end
+    return
+end
+
+Base.isopen(x::OrderedSynchronizer) = !(@atomic :monotonic x.closed)
+closed_exception() = InvalidStateException("OrderedSynchronizer is closed.", :closed)
+
+function check_closed(x::OrderedSynchronizer)
+    if !isopen(x)
+        # if the monotonic load succeed, now do an acquire fence
+        !(@atomic :acquire x.closed) && Base.concurrency_violation()
+        throw(closed_exception())
     end
 end
 
@@ -167,11 +188,14 @@ The `incr` argument controls how much the synchronizer's state is
 incremented after `f` is called. By default, `incr` is 1.
 """
 function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
+    check_closed(x)
     Base.@lock x.cond begin
         # wait until we're ready to execute f
         while x.i != i
+            check_closed(x)
             wait(x.cond)
         end
+        check_closed(x)
         try
             f()
         catch e
