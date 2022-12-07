@@ -245,6 +245,10 @@ using Test, WorkerUtilities
         wait(t)
         @test ansref[] == 10
         t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
+        GC.gc(true); GC.gc(true); GC.gc(true)
+        GC.gc(true); GC.gc(true); GC.gc(true)
+        GC.gc(true); GC.gc(true); GC.gc(true)
+        GC.gc(true); GC.gc(true); GC.gc(true)
         # correctly GCed
         @test wkref.value === nothing
     end
