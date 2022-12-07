@@ -209,3 +209,45 @@ using Test, WorkerUtilities
     end
 
 end # @testset "WorkerUtilities"
+
+# running these in a @testset doesn't work for some reason??
+# @testset "@wkspawn" begin
+# basics
+@test fetch(@wkspawn(1 + 1)) == 2
+
+if isdefined(Base.Threads, :maxthreadid)
+    # interactive threadpool
+    @test fetch(@wkspawn(:interactive, 1 + 1)) == 2
+end
+
+# show incorrect behavior
+ref = Ref(10)
+ansref = Ref(0)
+wkref = WeakRef(ref)
+t = let ref=ref
+    Threads.@spawn begin
+        ansref[] = $ref[]
+    end
+end
+wait(t)
+@test ansref[] == 10
+t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
+# there should be no program references to ref, and 3 GC calls
+# should have collected it, but it's still alive
+@test wkref.value.x == 10
+
+# and now with @wkspawn
+ref = Ref(10)
+ansref = Ref(0)
+wkref = WeakRef(ref)
+t = let ref=ref
+    @wkspawn begin
+        ansref[] = $ref[]
+    end
+end
+wait(t)
+@test ansref[] == 10
+t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
+@show wkref
+# correctly GCed
+@test wkref.value === nothing
