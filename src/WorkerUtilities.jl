@@ -359,7 +359,9 @@ macro wkspawn(args...)
         let $(letargs...)
             local task = Task($thunk)
             task.sticky = false
-            ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), task, $tpid)
+            @static if isdefined(Base.Threads, :maxthreadid)
+                ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), task, $tpid)
+            end
             if $(Expr(:islocal, var))
                 put!($var, task)
             end
