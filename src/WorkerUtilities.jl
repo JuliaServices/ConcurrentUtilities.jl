@@ -1,6 +1,6 @@
 module WorkerUtilities
 
-export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
@@ -274,5 +274,100 @@ function Base.unlock(rw::ReadWriteLock)
     unlock(rw.writelock)
     return
 end
+
+# mostly copied from Base definitions in task.jl and threadingconstructs.jl
+# but adapted to wrap interpolated mutable arguments in WeakRef
+function _lift_one_interp!(e)
+    letargs = Any[]  # store the new gensymed arguments
+    unwrapargs = Any[]
+    _lift_one_interp_helper(e, false, letargs, unwrapargs) # Start out _not_ in a quote context (false)
+    letargs, unwrapargs
+end
+_lift_one_interp_helper(v, _, _, _) = v
+function _lift_one_interp_helper(expr::Expr, in_quote_context, letargs, unwrapargs)
+    if expr.head === :$
+        if in_quote_context  # This $ is simply interpolating out of the quote
+            # Now, we're out of the quote, so any _further_ $ is ours.
+            in_quote_context = false
+        else
+            letarg = gensym()
+            newarg = gensym()
+            push!(letargs, :($(esc(letarg)) = ismutable($(esc(expr.args[1]))) ? WeakRef($(esc(expr.args[1]))) : $(esc(expr.args[1]))))
+            push!(unwrapargs, :($newarg = $unwrap($letarg)))
+            return newarg  # Don't recurse into the lifted $() exprs
+        end
+    elseif expr.head === :quote
+        in_quote_context = true   # Don't try to lift $ directly out of quotes
+    elseif expr.head === :macrocall
+        return expr  # Don't recur into macro calls, since some other macros use $
+    end
+    for (i,e) in enumerate(expr.args)
+        expr.args[i] = _lift_one_interp_helper(e, in_quote_context, letargs, unwrapargs)
+    end
+    expr
+end
+
+unwrap(@nospecialize(val)) = val isa WeakRef ? val.value : val
+
+"""
+    @wkspawn [:default|:interactive] expr
+
+Create a `Task` and `schedule` it to run on any available
+thread in the specified threadpool (`:default` if unspecified). The task is
+allocated to a thread once one becomes available. To wait for the task to
+finish, call `wait` on the result of this macro, or call
+`fetch` to wait and then obtain its return value.
+
+Values can be interpolated into `@wkspawn` via `\$`, which copies the value
+directly into the constructed underlying closure. This allows you to insert
+the _value_ of a variable, isolating the asynchronous code from changes to
+the variable's value in the current task. Interpolating a _mutable_ variable
+will also cause it to be wrapped in a `WeakRef`, so that Julia's internal
+references to these arguments won't prevent them from being garbage collected
+once the `Task` has finished running.
+"""
+macro wkspawn(args...)
+    tpid = Int8(0)
+    na = length(args)
+    if na == 2
+        ttype, ex = args
+        if ttype isa QuoteNode
+            ttype = ttype.value
+        elseif ttype isa Symbol
+            # TODO: allow unquoted symbols
+            ttype = nothing
+        end
+        if ttype === :interactive
+            tpid = Int8(1)
+        elseif ttype !== :default
+            throw(ArgumentError("unsupported threadpool in @spawn: $ttype"))
+        end
+    elseif na == 1
+        ex = args[1]
+    else
+        throw(ArgumentError("wrong number of arguments in @spawn"))
+    end
+
+    letargs, unwrapargs = _lift_one_interp!(ex)
+    _ex = quote
+        $(unwrapargs...)
+        $ex
+    end
+    thunk = esc(:(()->($_ex)))
+    var = esc(Base.sync_varname)
+    quote
+        let $(letargs...)
+            local task = Task($thunk)
+            task.sticky = false
+            ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), task, $tpid)
+            if $(Expr(:islocal, var))
+                put!($var, task)
+            end
+            schedule(task)
+            task
+        end
+    end
+end
+
 
 end # module
