@@ -379,21 +379,14 @@ references to these arguments won't prevent them from being garbage collected
 once the `Task` has finished running.
 """
 macro wkspawn(args...)
-    if length(args) == 1
-        e = args[1]
-        tp = :default
-    else
-        length(args) == 2 || error("Invalid number of arguments to @wkspawn")
-        e = args[end]
-        tp = args[1]
-    end
+    e = args[end]
     expr = quote
         ret = $e
         $(clear_current_task)()
         ret
     end
 @static if isdefined(Base.Threads, :maxthreadid)
-    q = esc(:(Threads.@spawn $tp $expr))
+    q = esc(:(Threads.@spawn $(args[1:end-1]...) $expr))
 else
     q = esc(:(Threads.@spawn $expr))
 end
