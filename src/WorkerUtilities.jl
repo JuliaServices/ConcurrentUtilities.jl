@@ -127,10 +127,18 @@ mutable struct OrderedSynchronizer
     coordinating_task::Task
     cond::Threads.Condition
     i::Int
+@static if VERSION < v"1.7"
+    closed::Threads.Atomic{Bool}
+else
     @atomic closed::Bool
 end
+end
 
+@static if VERSION < v"1.7"
+OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i, Threads.Atomic{Bool}(false))
+else
 OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i, false)
+end
 
 """
     reset!(x::OrderedSynchronizer, i=1)
@@ -140,25 +148,41 @@ Reset the state of `x` to `i`.
 function reset!(x::OrderedSynchronizer, i=1)
     Base.@lock x.cond begin
         x.i = i
+@static if VERSION < v"1.7"
+        x.closed[] = false
+else
         @atomic :monotonic x.closed = false
+end
     end
 end
 
 function Base.close(x::OrderedSynchronizer, excp::Exception=closed_exception())
     Base.@lock x.cond begin
+@static if VERSION < v"1.7"
+        x.closed[] = true
+else
         @atomic :monotonic x.closed = true
+end
         Base.notify_error(x.cond, excp)
     end
     return
 end
 
+@static if VERSION < v"1.7"
+    Base.isopen(x::OrderedSynchronizer) = !x.closed[]
+else
 Base.isopen(x::OrderedSynchronizer) = !(@atomic :monotonic x.closed)
+end
 closed_exception() = InvalidStateException("OrderedSynchronizer is closed.", :closed)
 
 function check_closed(x::OrderedSynchronizer)
     if !isopen(x)
         # if the monotonic load succeed, now do an acquire fence
+@static if VERSION < v"1.7"
+        !x.closed[] && Base.concurrency_violation()
+else
         !(@atomic :acquire x.closed) && Base.concurrency_violation()
+end
         throw(closed_exception())
     end
 end
@@ -208,25 +232,57 @@ end
 
 mutable struct ReadWriteLock
     writelock::ReentrantLock
+@static if VERSION < v"1.7"
+    waitingwriter::Union{Nothing, Task}
+else
     @atomic waitingwriter::Union{Nothing, Task}
+end
     readwait::Base.ThreadSynchronizer
+@static if VERSION < v"1.7"
+    readercount::Threads.Atomic{Int}
+    readerwait::Threads.Atomic{Int}
+else
     @atomic readercount::Int
     @atomic readerwait::Int
 end
+end
 
+@static if VERSION < v"1.7"
+ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
+else
 ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), 0, 0)
+end
 
 const MaxReaders = 1 << 30
 
 function readlock(rw::ReadWriteLock)
+@static if VERSION < v"1.7"
+    Threads.atomic_add!(rw.readercount, 1)
+    if rw.readercount[] < 0
+        # A writer is active or pending, so we need to wait
+        Base.@lock rw.readwait wait(rw.readwait)
+    end
+else
     if (@atomic :acquire_release rw.readercount += 1) < 0
         # A writer is active or pending, so we need to wait
         Base.@lock rw.readwait wait(rw.readwait)
     end
+end
     return
 end
 
 function readunlock(rw::ReadWriteLock)
+@static if VERSION < v"1.7"
+    Threads.atomic_sub!(rw.readercount, 1)
+    if rw.readercount[] < 0
+        # there's a pending write, check if we're the last reader
+        Threads.atomic_sub!(rw.readerwait, 1)
+        if rw.readerwait[] == 0
+            # Last reader, wake up the writer.
+            schedule(rw.waitingwriter)
+        end
+    end
+else
     if (@atomic :acquire_release rw.readercount -= 1) < 0
         # there's a pending write, check if we're the last reader
         if (@atomic :acquire_release rw.readerwait -= 1) == 0
@@ -234,6 +290,7 @@ function readunlock(rw::ReadWriteLock)
             schedule(rw.waitingwriter)
         end
     end
+end
     return
 end
 
@@ -243,7 +300,12 @@ function Base.lock(rw::ReadWriteLock)
     # to make readercount negative; this will prevent any further readers
     # from locking, while maintaining our actual reader count so we
     # can track when we're able to write
+@static if VERSION < v"1.7"
+    Threads.atomic_sub!(rw.readercount, MaxReaders)
+    r = rw.readercount[] + MaxReaders
+else
     r = (@atomic :acquire_release rw.readercount -= MaxReaders) + MaxReaders
+end
     # if r == 0, that means there were no readers,
     # so we can proceed directly with the write lock
     # if r == 1, this is an interesting case because there's only 1 reader
@@ -253,6 +315,18 @@ function Base.lock(rw::ReadWriteLock)
     # to -1, and we increment by 1 to 0, so we know the reader is done and can proceed
     # without waiting. If _we_ win the race, then we'll continue to waiting
     # and the reader will decrement and then schedule us
+@static if VERSION < v"1.7"
+    if r != 0
+        Threads.atomic_add!(rw.readerwait, r)
+        if rw.readerwait[] != 0
+            # otherwise, there are readers, so we need to wait for them to finish
+            # we do this by setting ourselves as the waiting writer
+            # and wait for the last reader to re-schedule us
+            rw.waitingwriter = current_task()
+            wait()
+        end
+    end
+else
     if r != 0 && (@atomic :acquire_release rw.readerwait += r) != 0
         # otherwise, there are readers, so we need to wait for them to finish
         # we do this by setting ourselves as the waiting writer
@@ -260,13 +334,19 @@ function Base.lock(rw::ReadWriteLock)
         @atomic rw.waitingwriter = current_task()
         wait()
     end
+end
     return
 end
 
 Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
 
 function Base.unlock(rw::ReadWriteLock)
+@static if VERSION < v"1.7"
+    Threads.atomic_add!(rw.readercount, MaxReaders)
+    r = rw.readercount[]
+else
     r = (@atomic :acquire_release rw.readercount += MaxReaders)
+end
     if r > 0
         # wake up waiting readers
         Base.@lock rw.readwait notify(rw.readwait)
@@ -370,6 +450,5 @@ macro wkspawn(args...)
         end
     end
 end
-
 
 end # module
