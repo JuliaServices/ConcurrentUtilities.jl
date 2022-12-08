@@ -358,6 +358,7 @@ end
 function clear_current_task()
     current_task().storage = nothing
     current_task().code = nothing
+    current_task().result = nothing
     return
 end
 
