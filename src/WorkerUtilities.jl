@@ -355,39 +355,11 @@ end
     return
 end
 
-# mostly copied from Base definitions in task.jl and threadingconstructs.jl
-# but adapted to wrap interpolated mutable arguments in WeakRef
-function _lift_one_interp!(e)
-    letargs = Any[]  # store the new gensymed arguments
-    unwrapargs = Any[]
-    _lift_one_interp_helper(e, false, letargs, unwrapargs) # Start out _not_ in a quote context (false)
-    letargs, unwrapargs
+function clear_current_task()
+    current_task().storage = nothing
+    current_task().code = nothing
+    return
 end
-_lift_one_interp_helper(v, _, _, _) = v
-function _lift_one_interp_helper(expr::Expr, in_quote_context, letargs, unwrapargs)
-    if expr.head === :$
-        if in_quote_context  # This $ is simply interpolating out of the quote
-            # Now, we're out of the quote, so any _further_ $ is ours.
-            in_quote_context = false
-        else
-            letarg = gensym()
-            newarg = gensym()
-            push!(letargs, :($(esc(letarg)) = ismutable($(esc(expr.args[1]))) ? WeakRef($(esc(expr.args[1]))) : $(esc(expr.args[1]))))
-            push!(unwrapargs, :($newarg = $unwrap($letarg)))
-            return newarg  # Don't recurse into the lifted $() exprs
-        end
-    elseif expr.head === :quote
-        in_quote_context = true   # Don't try to lift $ directly out of quotes
-    elseif expr.head === :macrocall
-        return expr  # Don't recur into macro calls, since some other macros use $
-    end
-    for (i,e) in enumerate(expr.args)
-        expr.args[i] = _lift_one_interp_helper(e, in_quote_context, letargs, unwrapargs)
-    end
-    expr
-end
-
-unwrap(@nospecialize(val)) = val isa WeakRef ? val.value : val
 
 """
     @wkspawn [:default|:interactive] expr
@@ -407,48 +379,25 @@ references to these arguments won't prevent them from being garbage collected
 once the `Task` has finished running.
 """
 macro wkspawn(args...)
-    tpid = Int8(0)
-    na = length(args)
-    if na == 2
-        ttype, ex = args
-        if ttype isa QuoteNode
-            ttype = ttype.value
-        elseif ttype isa Symbol
-            # TODO: allow unquoted symbols
-            ttype = nothing
-        end
-        if ttype === :interactive
-            tpid = Int8(1)
-        elseif ttype !== :default
-            throw(ArgumentError("unsupported threadpool in @spawn: $ttype"))
-        end
-    elseif na == 1
-        ex = args[1]
+    if length(args) == 1
+        e = args[1]
+        tp = :default
     else
-        throw(ArgumentError("wrong number of arguments in @spawn"))
+        length(args) == 2 || error("Invalid number of arguments to @wkspawn")
+        e = args[end]
+        tp = args[1]
     end
-
-    letargs, unwrapargs = _lift_one_interp!(ex)
-    _ex = quote
-        $(unwrapargs...)
-        $ex
+    expr = quote
+        ret = $e
+        $(clear_current_task)()
+        ret
     end
-    thunk = esc(:(()->($_ex)))
-    var = esc(Base.sync_varname)
-    quote
-        let $(letargs...)
-            local task = Task($thunk)
-            task.sticky = false
-            @static if isdefined(Base.Threads, :maxthreadid)
-                ccall(:jl_set_task_threadpoolid, Cint, (Any, Int8), task, $tpid)
-            end
-            if $(Expr(:islocal, var))
-                put!($var, task)
-            end
-            schedule(task)
-            task
-        end
-    end
+@static if isdefined(Base.Threads, :maxthreadid)
+    q = esc(:(Threads.@spawn $tp $expr))
+else
+    q = esc(:(Threads.@spawn $expr))
+end
+    return q
 end
 
 end # module
