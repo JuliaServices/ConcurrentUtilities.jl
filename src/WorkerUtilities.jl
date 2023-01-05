@@ -1,6 +1,7 @@
 module WorkerUtilities
 
-export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn,
+       TaskSet, produce!, consume!
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
@@ -391,6 +392,63 @@ else
     q = esc(:(Threads.@spawn $expr))
 end
     return q
+end
+
+# we're going to be producing tasks that can be done concurrently
+# but need to be synchronized in order
+struct TaskSet{T}
+    tasks::Channel{Tuple{Int, T}}
+    sync::OrderedSynchronizer
+end
+
+# T is the type of whatever we're putting in the task channel
+# and that consumers will get along with their token
+function TaskSet(::Type{T}) where {T}
+    tasks = Channel{Tuple{Int, T}}(Inf)
+    sync = OrderedSynchronizer()
+    return TaskSet(tasks, sync)
+end
+
+function produce!(f, taskset::TaskSet{T}) where {T}
+    ntasks = Ref{Int}(0)
+    function put!(x::T)
+        ntasks[] += 1
+        Base.put!(taskset.tasks, (ntasks[], x))
+    end
+    function wait()
+        Base.put!(() -> (), taskset.sync, ntasks[] + 1)
+        reset!(taskset.sync)
+        ntasks[] = 0
+    end
+    return errormonitor(Threads.@spawn begin
+        try
+            f($put!, $wait)
+        finally
+            close($(taskset.tasks))
+            close($(taskset.sync))
+        end
+    end)
+end
+
+function consume!(f, taskset::TaskSet{T}) where {T}
+    return errormonitor(Threads.@spawn begin
+        try
+            f(taskset)
+        catch e
+            # we expect a channel closed exception if the producer closed
+            e isa Base.InvalidStateException || rethrow(e)
+        finally
+            close(taskset.tasks)
+            close(taskset.sync)
+        end
+    end)
+end
+
+const pass = () -> ()
+
+function Base.take!(taskset::TaskSet{T}) where {T}
+    i, task = take!(taskset.tasks)
+    return (f=pass) -> Base.put!(f, taskset.sync, i), task
 end
 
 end # module
