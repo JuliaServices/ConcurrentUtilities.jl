@@ -152,7 +152,8 @@ function Worker(;
     env["RETESTITEMS_INTERACTIVE"] = get(env, "RETESTITEMS_INTERACTIVE", string(Base.isinteractive()))
     # end copied from Distributed.launch
     ## start the worker process
-    cmd = `$(Base.julia_cmd()) $exeflags --startup-file=no -e 'using ReTestItems; ReTestItems.Workers.startworker()'`
+    exec = "include(\"$(@__FILE__)\"); using .Workers; Workers.startworker()"
+    cmd = `$(Base.julia_cmd()) $exeflags --startup-file=no -e $exec`
     proc = open(detach(setenv(addenv(cmd, env), dir=dir)), "r+")
     pid = Libc.getpid(proc)
 
@@ -221,13 +222,13 @@ function process_responses(w::Worker)
                 @assert haskey(reqs, r.id) "Received response for unknown request $(r.id) from worker $(w.pid)"
                 # look up the Future for this request
                 fut = pop!(reqs, r.id)
-            end
-            @assert !isready(fut.value) "Received duplicate response for request $(r.id) from worker $(w.pid)"
-            if r.error !== nothing
-                # this allows rethrowing the exception from the worker to the caller
-                close(fut.value, r.error)
-            else
-                put!(fut.value, r.result)
+                @assert !isready(fut.value) "Received duplicate response for request $(r.id) from worker $(w.pid)"
+                if r.error !== nothing
+                    # this allows rethrowing the exception from the worker to the caller
+                    close(fut.value, r.error)
+                else
+                    put!(fut.value, r.result)
+                end
             end
         end
     catch e
