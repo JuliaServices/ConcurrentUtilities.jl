@@ -1,6 +1,8 @@
 module WorkerUtilities
 
-export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn, Workers
+
+include("workers.jl")
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
