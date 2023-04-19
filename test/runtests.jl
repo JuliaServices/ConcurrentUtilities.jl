@@ -216,12 +216,12 @@ using Test, ConcurrentUtilities
     include("workers.jl")
     # After all tests have run, check we didn't leave any workers running.
     for w in ALL_WORKERS
-        if process_running(w.process) || !w.terminated
+        if process_running(w.process) || !Workers.terminated(w)
             @show w
         end
         @test !process_running(w.process)
-        @test !isopen(w.socket)
-        @test w.terminated
+        @test !isopen(w.pipe)
+        @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
         @test isempty(w.futures)

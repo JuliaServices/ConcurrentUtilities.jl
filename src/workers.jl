@@ -6,15 +6,12 @@ export Worker, remote_eval, remote_fetch, terminate!, WorkerTerminatedException
 
 function try_with_timeout(f, timeout)
     ch = Channel(0)
-    timer = Timer(tm -> close(ch, ErrorException("timed out after $timeout seconds")), timeout)
+    timer = Timer(tm -> close(ch, ErrorException("`$f` timed out after $timeout seconds")), timeout)
     Threads.@spawn begin
         try
             put!(ch, $f())
         catch e
-            if !(e isa HTTPError)
-                e = CapturedException(e, catch_backtrace())
-            end
-            close(ch, e)
+            close(ch, CapturedException(e, catch_backtrace()))
         finally
             close(timer)
         end
@@ -24,74 +21,100 @@ end
 
 # RPC framework
 struct Request
-    mod::Symbol
-    expr::Expr
+    mod::Symbol # module in which we should eval
+    expr::Expr # expression to eval
     id::UInt64 # unique id for this request
     # if true, worker should terminate immediately after receiving this Request
     # ignoring other fields
     shutdown::Bool
 end
 
-# worker executes Request and returns a serialized Response object *if* Request has an id
+# worker executes Request and returns a serialized Response object *if* Request wasn't a shutdown
 struct Response
     result
     error::Union{Nothing, Exception}
     id::UInt64 # matches a corresponding Request.id
 end
 
-# simple Future that coordinator can wait on until a Response comes back for a Request
-struct Future
+# simple FutureResult that coordinator can wait on until a Response comes back for a Request
+struct FutureResult
     id::UInt64 # matches a corresponding Request.id
     value::Channel{Any} # size 1
 end
 
-Base.fetch(f::Future) = fetch(f.value)
+Base.fetch(f::FutureResult) = fetch(f.value)
 
 mutable struct Worker
     lock::ReentrantLock # protects the .futures field; no other fields are modified after construction
     pid::Int
     process::Base.Process
-    socket::Base.PipeEndpoint
+    server::Sockets.PipeServer
+    pipe::Base.PipeEndpoint
     messages::Task
     output::Task
     process_watch::Task
     worksubmission::Task
-    workqueue::Channel{Tuple{Request, Future}}
-    futures::Dict{UInt64, Future} # Request.id -> Future
+    workqueue::Channel{Tuple{Request, FutureResult}}
+    futures::Dict{UInt64, FutureResult} # Request.id -> FutureResult
+@static if VERSION < v"1.7"
+    terminated::Threads.Atomic{Bool}
+else
     @atomic terminated::Bool
 end
+end
 
-# used to close Future.value channels when a worker terminates
+# used to close FutureResult.value channels when a worker terminates
 struct WorkerTerminatedException <: Exception
     worker::Worker
 end
+
+# atomics compat
+macro atomiccas(ex, cmp, val)
+    @static if VERSION < v"1.7"
+        return esc(quote
+            _ret = Threads.atomic_cas!($ex, $cmp, $val)
+            (; success=(_ret === $cmp))
+        end)
+    else
+        return esc(:(@atomicreplace $ex $cmp => $val))
+    end
+end
+
+macro atomicget(ex)
+    @static if VERSION < v"1.7"
+        return esc(Expr(:ref, ex))
+    else
+        return esc(:(@atomic :acquire $ex))
+    end
+end
+
+terminated(w::Worker) = @atomicget(w.terminated)
 
 # performs all the "closing" tasks of worker fields
 # but does not *wait* for a final close state
 # so typically callers should call wait(w) after this
 function terminate!(w::Worker, from::Symbol=:manual)
-    already_terminated = @atomicswap :monotonic w.terminated = true
-    if !already_terminated
+    if @atomiccas(w.terminated, false, true).success
+        # we won getting to close down the worker
         @debug "terminating worker $(w.pid) from $from"
-    end
-    wte = WorkerTerminatedException(w)
-    @lock w.lock begin
-        for (_, fut) in w.futures
-            close(fut.value, wte)
+        wte = WorkerTerminatedException(w)
+        Base.@lock w.lock begin
+            for (_, fut) in w.futures
+                close(fut.value, wte)
+            end
+            empty!(w.futures)
         end
-        empty!(w.futures)
+        signal = Base.SIGTERM
+        while true
+            kill(w.process, signal)
+            signal = signal == Base.SIGTERM ? Base.SIGINT : Base.SIGKILL
+            process_exited(w.process) && break
+            sleep(0.1)
+            process_exited(w.process) && break
+        end
+        close(w.pipe)
+        close(w.server)
     end
-    signal = Base.SIGTERM
-    while true
-        kill(w.process, signal)
-        signal = signal == Base.SIGTERM ? Base.SIGINT : Base.SIGKILL
-        process_exited(w.process) && break
-        sleep(0.1)
-        process_exited(w.process) && break
-    end
-    # if !(w.socket.status == Base.StatusUninit || w.socket.status == Base.StatusInit || w.socket.handle === C_NULL)
-        close(w.socket)
-    # end
     return
 end
 
@@ -107,11 +130,10 @@ end
 # gracefully terminate a worker by sending a shutdown message
 # and waiting for the other tasks to perform worker shutdown
 function Base.close(w::Worker)
-    if !w.terminated && isopen(w.socket)
+    if !terminated(w) && isopen(w.pipe)
         req = Request(Symbol(), :(), rand(UInt64), true)
-        @lock w.lock begin
-            serialize(w.socket, req)
-            flush(w.socket)
+        Base.@lock w.lock begin
+            serialize(w.pipe, req)
         end
     end
     wait(w)
@@ -121,7 +143,7 @@ end
 # wait until our spawned tasks have all finished
 Base.wait(w::Worker) = fetch(w.process_watch) && fetch(w.messages) && fetch(w.output)
 
-Base.show(io::IO, w::Worker) = print(io, "Worker(pid=$(w.pid)", w.terminated ? ", terminated=true, termsignal=$(w.process.termsignal)" : "", ")")
+Base.show(io::IO, w::Worker) = print(io, "Worker(pid=$(w.pid)", terminated(w) ? ", terminated=true, termsignal=$(w.process.termsignal)" : "", ")")
 
 # used in testing to ensure all created workers are
 # eventually cleaned up properly
@@ -154,24 +176,23 @@ function Worker(;
     end
     # end copied from Distributed.launch
     ## start the worker process
+    file = tempname()
+    server = Sockets.listen(file)
     color = get(worker_redirect_io, :color, false) ? "yes" : "no" # respect color of target io
-    exec = "include(\"$(@__DIR__)/ConcurrentUtilities.jl\"); using ConcurrentUtilities: Workers; Workers.startworker()"
+    exec = "include(\"$(@__DIR__)/ConcurrentUtilities.jl\"); using ConcurrentUtilities: Workers; Workers.startworker(\"$file\")"
     cmd = `$(Base.julia_cmd()) $exeflags --startup-file=no --color=$color -e $exec`
     proc = open(detach(setenv(addenv(cmd, env), dir=dir)), "r+")
     pid = Libc.getpid(proc)
 
     ## connect to the worker process with timeout
     try
-        sock = try_with_timeout(connect_timeout) do
-            port_str = ""
-            while isempty(port_str) && !contains(port_str, r"juliaworker:.+")
-                port_str = readline(proc) # 1st thing the worker sends is port its listening on
-            end
-            # parse the port # and connect to the server
-            return Sockets.connect(split(port_str, ':')[2])
-        end
+        pipe = try_with_timeout(() -> Sockets.accept(server), connect_timeout)
         # create worker
-        w = Worker(ReentrantLock(), pid, proc, sock, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, Future}}(), Dict{UInt64, Future}(), false)
+@static if VERSION < v"1.7"
+        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), Threads.Atomic{Bool}(false))
+else
+        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), false)
+end
         ## start a task to watch for worker process termination
         w.process_watch = Threads.@spawn watch_and_terminate!(w)
         ## start a task to redirect worker output
@@ -197,7 +218,7 @@ end
 
 function redirect_worker_output(io::IO, w::Worker, fn, proc)
     try
-        while !process_exited(proc) && !w.terminated
+        while !process_exited(proc) && !@atomicget(w.terminated)
             line = readline(proc)
             if !isempty(line)
                 fn(io, w.pid, line)
@@ -216,14 +237,13 @@ function process_responses(w::Worker)
     lock = w.lock
     reqs = w.futures
     try
-        while isopen(w.socket) && !w.terminated
+        while isopen(w.pipe) && !@atomicget(w.terminated)
             # get the next Response from the worker
-            r = deserialize(w.socket)
+            r = deserialize(w.pipe)
             @assert r isa Response "Received invalid response from worker $(w.pid): $(r)"
             # println("Received response $(r) from worker $(w.pid)")
-            @lock lock begin
-                @assert haskey(reqs, r.id) "Received response for unknown request $(r.id) from worker $(w.pid)"
-                # look up the Future for this request
+            Base.@lock lock begin
+                # look up the FutureResult for this request
                 fut = pop!(reqs, r.id)
                 @assert !isready(fut.value) "Received duplicate response for request $(r.id) from worker $(w.pid)"
                 if r.error !== nothing
@@ -246,11 +266,10 @@ function process_work(w::Worker)
     try
         for (req, fut) in w.workqueue
             # println("Sending request $(req) to worker $(w.pid)")
-            serialize(w.socket, req)
-            flush(w.socket)
-            @lock w.lock begin
+            Base.@lock w.lock begin
                 w.futures[req.id] = fut
             end
+            serialize(w.pipe, req)
         end
     catch e
         # @error "Error processing work for worker $(w.pid)" exception=(e, catch_backtrace())
@@ -262,10 +281,10 @@ end
 remote_eval(w::Worker, expr) = remote_eval(w, Main, expr.head == :block ? Expr(:toplevel, expr.args...) : expr)
 
 function remote_eval(w::Worker, mod, expr)
-    w.terminated && throw(WorkerTerminatedException(w))
+    terminated(w) && throw(WorkerTerminatedException(w))
     # we only send the Symbol module name to the worker
     req = Request(nameof(mod), expr, rand(UInt64), false)
-    fut = Future(req.id, Channel(1))
+    fut = FutureResult(req.id, Channel(1))
     put!(w.workqueue, (req, fut))
     return fut
 end
@@ -284,25 +303,18 @@ else
     end
 end
 
-function startworker()
+function startworker(file)
     # don't need stdin (copied from Distributed.start_worker)
     redirect_stdin(devnull)
     close(stdin)
     redirect_stderr(stdout) # redirect stderr so coordinator reads everything from stdout
-    f = tempname()
-    sock = listen(f)
-    # send the port to the coordinator
-    println(stdout, "juliaworker:$f")
-    flush(stdout)
-    # copied from Distributed.start_worker
-    # Sockets.nagle(sock, false)
-    # Sockets.quickack(sock, true)
+    pipe = Sockets.connect(file)
     try
-        wait(@_spawn_interactive serve_requests(accept(sock)))
+        wait(@_spawn_interactive serve_requests(pipe))
     catch e
         @error "Error serving requests from coordinator" exception=(e, catch_backtrace())
     finally
-        close(sock)
+        close(pipe)
         exit(0)
     end
 end
@@ -343,10 +355,9 @@ function serve_requests(io)
             catch e
                 resp = Response(nothing, CapturedException(e, catch_backtrace()), r.id)
             finally
-                @lock iolock begin
+                Base.@lock iolock begin
                     # println("sending response: $(resp)")
                     serialize(io, resp)
-                    flush(io)
                 end
             end
         end

@@ -1,7 +1,7 @@
 module ConcurrentUtilities
 
 export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn, ConcurrentStack,
-    remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException
+    Workers, remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException
 
 include("concurrentstack.jl")
 include("workers.jl")

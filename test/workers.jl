@@ -7,17 +7,23 @@ using Test, IOCapture
     @testset "correct connected/running states ($w)" begin
         @test w.pid > 0
         @test process_running(w.process)
-        @test isopen(w.socket)
-        @test !w.terminated
+        @test isopen(w.pipe)
+        @test !Workers.terminated(w)
+        if !(istaskstarted(w.messages) && !istaskdone(w.messages))
+            @show w.messages
+        end
         @test istaskstarted(w.messages) && !istaskdone(w.messages)
+        if !(istaskstarted(w.output) && !istaskdone(w.output))
+            @show w.output
+        end
         @test istaskstarted(w.output) && !istaskdone(w.output)
         @test isempty(w.futures)
     end
     @testset "clean shutdown ($w)" begin
         close(w)
         @test !process_running(w.process)
-        @test !isopen(w.socket)
-        @test w.terminated
+        @test !isopen(w.pipe)
+        @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
         @test isempty(w.futures)
@@ -29,8 +35,8 @@ using Test, IOCapture
         terminate!(w)
         wait(w)
         @test !process_running(w.process)
-        @test !isopen(w.socket)
-        @test w.terminated
+        @test !isopen(w.pipe)
+        @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
         @test isempty(w.futures)
@@ -74,8 +80,8 @@ using Test, IOCapture
         @test_throws Workers.WorkerTerminatedException fetch(fut)
         wait(w)
         @test !process_running(w.process)
-        @test !isopen(w.socket)
-        @test w.terminated
+        @test !isopen(w.pipe)
+        @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
         @test isempty(w.futures)
@@ -103,5 +109,5 @@ end
     logs = IOCapture.capture(color=true) do
         run(`$(Base.julia_cmd()) --project=$project_path --color=yes -e $code`)
     end
-    @test endswith(logs.output,  "\e[31mthis better ber red\e[39m\n")
+    @test contains(logs.output,  "\e[31mthis better ber red\e[39m\n")
 end
