@@ -1,6 +1,8 @@
 module ConcurrentUtilities
 
-export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn, ConcurrentStack
+
+include("concurrentstack.jl")
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]

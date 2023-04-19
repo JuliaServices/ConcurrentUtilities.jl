@@ -208,6 +208,7 @@ using Test, ConcurrentUtilities
         @test !islocked(rw)
     end
 
+    include("concurrentstack.jl")
 end
 
     # @testset "@wkspawn" begin
