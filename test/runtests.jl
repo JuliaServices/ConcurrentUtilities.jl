@@ -1,15 +1,15 @@
-using Test, WorkerUtilities
+using Test, ConcurrentUtilities
 
-@testset "WorkerUtilities" begin
+@testset "ConcurrentUtilities" begin
 
-    @testset "WorkerUtilities.@spawn" begin
+    @testset "ConcurrentUtilities.@spawn" begin
 
-        WorkerUtilities.init()
-        threadid = fetch(WorkerUtilities.@spawn(Threads.threadid()))
+        ConcurrentUtilities.init()
+        threadid = fetch(ConcurrentUtilities.@spawn(Threads.threadid()))
         @test Threads.nthreads() == 1 ? (threadid == 1) : (threadid != 1)
-        @test WorkerUtilities.@spawn(false, 1 + 1).storage === nothing
+        @test ConcurrentUtilities.@spawn(false, 1 + 1).storage === nothing
 
-    end # @testset "WorkerUtilities.@spawn"
+    end # @testset "ConcurrentUtilities.@spawn"
 
     @testset "Lockable" begin
         # Lockable{T, L<:AbstractLock}
@@ -102,7 +102,7 @@ using Test, WorkerUtilities
         catch e
             e.task.result
         end
-        @test e == WorkerUtilities.closed_exception()
+        @test e == ConcurrentUtilities.closed_exception()
     end
 
     @testset "ReadWriteLock" begin
@@ -252,4 +252,4 @@ end
         @test wkref.value === nothing
 #     end
 
-# end # @testset "WorkerUtilities"
+# end # @testset "ConcurrentUtilities"

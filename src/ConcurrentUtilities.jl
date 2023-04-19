@@ -1,4 +1,4 @@
-module WorkerUtilities
+module ConcurrentUtilities
 
 export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn
 
@@ -6,11 +6,11 @@ const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
 
 """
-  WorkerUtilities.@spawn expr
-  WorkerUtilities.@spawn passthroughstorage::Bool expr
+  ConcurrentUtilities.@spawn expr
+  ConcurrentUtilities.@spawn passthroughstorage::Bool expr
 
 Similar to `Threads.@spawn`, schedule and execute a task (given by `expr`)
-that will be run on a "background worker" (see [`WorkerUtilities.init`]((@ref))).
+that will be run on a "background worker" (see [`ConcurrentUtilities.init`]((@ref))).
 
 In the 2-argument invocation, `passthroughstorage` controls whether the task-local storage of the
 `current_task()` should be "passed through" to the spawned task.
@@ -19,17 +19,17 @@ macro spawn(thunk)
     esc(quote
         tsk = @task $thunk
         tsk.storage = current_task().storage
-        put!(WorkerUtilities.WORK_QUEUE, tsk)
+        put!(ConcurrentUtilities.WORK_QUEUE, tsk)
         tsk
     end)
 end
 
 """
-  WorkerUtilities.@spawn expr
-  WorkerUtilities.@spawn passthroughstorage::Bool expr
+  ConcurrentUtilities.@spawn expr
+  ConcurrentUtilities.@spawn passthroughstorage::Bool expr
 
 Similar to `Threads.@spawn`, schedule and execute a task (given by `expr`)
-that will be run on a "background worker" (see [`WorkerUtilities.init`]((@ref))).
+that will be run on a "background worker" (see [`ConcurrentUtilities.init`]((@ref))).
 
 In the 2-argument invocation, `passthroughstorage` controls whether the task-local storage of the
 `current_task()` should be "passed through" to the spawned task.
@@ -40,19 +40,19 @@ macro spawn(passthroughstorage, thunk)
         if $passthroughstorage
             tsk.storage = current_task().storage
         end
-        put!(WorkerUtilities.WORK_QUEUE, tsk)
+        put!(ConcurrentUtilities.WORK_QUEUE, tsk)
         tsk
     end)
 end
 
 """
-  WorkerUtilities.init(nworkers=Threads.nthreads() - 1)
+  ConcurrentUtilities.init(nworkers=Threads.nthreads() - 1)
 
 Initialize background workers that will execute tasks spawned via
-[`WorkerUtilities.@spawn`](@ref). If `nworkers == 1`, a single worker
+[`ConcurrentUtilities.@spawn`](@ref). If `nworkers == 1`, a single worker
 will be started on thread 1 where tasks will be executed in contention
 with other thread 1 work. Background worker tasks can be inspected by
-looking at `WorkerUtilities.WORKER_TASKS`.
+looking at `ConcurrentUtilities.WORKER_TASKS`.
 """
 function init(nworkers=Threads.nthreads()-1)
     maxthreadid = nworkers + 1
