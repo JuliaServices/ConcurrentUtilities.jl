@@ -209,6 +209,23 @@ using Test, ConcurrentUtilities
     end
 
     include("concurrentstack.jl")
+
+    # track all workers every created
+    ALL_WORKERS = []
+    ConcurrentUtilities.Workers.GLOBAL_CALLBACK_PER_WORKER[] = w -> push!(ALL_WORKERS, w)
+    include("workers.jl")
+    # After all tests have run, check we didn't leave any workers running.
+    for w in ALL_WORKERS
+        if process_running(w.process) || !w.terminated
+            @show w
+        end
+        @test !process_running(w.process)
+        @test !isopen(w.socket)
+        @test w.terminated
+        @test istaskstarted(w.messages) && istaskdone(w.messages)
+        @test istaskstarted(w.output) && istaskdone(w.output)
+        @test isempty(w.futures)
+    end
 end
 
     # @testset "@wkspawn" begin

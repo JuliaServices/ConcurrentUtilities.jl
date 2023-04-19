@@ -1,8 +1,11 @@
 module ConcurrentUtilities
 
-export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn, ConcurrentStack
+export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn, ConcurrentStack,
+    remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException
 
 include("concurrentstack.jl")
+include("workers.jl")
+using .Workers
 
 const WORK_QUEUE = Channel{Task}(0)
 const WORKER_TASKS = Task[]
