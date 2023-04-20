@@ -6,6 +6,7 @@ using Test, ConcurrentUtilities
 
         ConcurrentUtilities.init()
         threadid = fetch(ConcurrentUtilities.@spawn(Threads.threadid()))
+        @show Threads.nthreads(), threadid
         @test Threads.nthreads() == 1 ? (threadid == 1) : (threadid != 1)
         @test ConcurrentUtilities.@spawn(false, 1 + 1).storage === nothing
 
@@ -208,8 +209,6 @@ using Test, ConcurrentUtilities
         @test !islocked(rw)
     end
 
-    include("concurrentstack.jl")
-
     # track all workers every created
     ALL_WORKERS = []
     ConcurrentUtilities.Workers.GLOBAL_CALLBACK_PER_WORKER[] = w -> push!(ALL_WORKERS, w)
@@ -226,6 +225,7 @@ using Test, ConcurrentUtilities
         @test istaskstarted(w.output) && istaskdone(w.output)
         @test isempty(w.futures)
     end
+    include("pools.jl")
 end
 
     # @testset "@wkspawn" begin
