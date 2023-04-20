@@ -232,14 +232,21 @@ function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
     end
 end
 
+"""
+    ReadWriteLock()
+
+A threadsafe lock that allows multiple readers or a single writer.
+
+The read side is acquired/released via `readlock(rw)` and `readunlock(rw)`,
+while the write side is acquired/released via `lock(rw)` and `unlock(rw)`.
+
+While a writer is active, all readers will block. Once the writer is finished,
+all pending readers will be allowed to acquire the lock before the next writer.
+"""
 mutable struct ReadWriteLock
     writelock::ReentrantLock
-@static if VERSION < v"1.7"
     waitingwriter::Union{Nothing, Task}
-else
-    @atomic waitingwriter::Union{Nothing, Task}
-end
-    readwait::Base.ThreadSynchronizer
+    readwait::Threads.Condition
 @static if VERSION < v"1.7"
     readercount::Threads.Atomic{Int}
     readerwait::Threads.Atomic{Int}
@@ -250,9 +257,9 @@ end
 end
 
 @static if VERSION < v"1.7"
-ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
+ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Threads.Condition(), Threads.Atomic{Int}(0), Threads.Atomic{Int}(0))
 else
-ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Base.ThreadSynchronizer(), 0, 0)
+ReadWriteLock() = ReadWriteLock(ReentrantLock(), nothing, Threads.Condition(), 0, 0)
 end
 
 const MaxReaders = 1 << 30
@@ -262,12 +269,24 @@ function readlock(rw::ReadWriteLock)
     Threads.atomic_add!(rw.readercount, 1)
     if rw.readercount[] < 0
         # A writer is active or pending, so we need to wait
-        Base.@lock rw.readwait wait(rw.readwait)
+        Base.@lock rw.readwait begin
+            # check our condition again
+            if rw.readercount[] < 0
+                # writer still active
+                wait(rw.readwait)
+            end
+        end
     end
 else
     if (@atomic :acquire_release rw.readercount += 1) < 0
         # A writer is active or pending, so we need to wait
-        Base.@lock rw.readwait wait(rw.readwait)
+        Base.@lock rw.readwait begin
+            # check our condition again
+            if rw.readercount < 0
+                # writer still active
+                wait(rw.readwait)
+            end
+        end
     end
 end
     return
@@ -281,7 +300,9 @@ function readunlock(rw::ReadWriteLock)
         Threads.atomic_sub!(rw.readerwait, 1)
         if rw.readerwait[] == 0
             # Last reader, wake up the writer.
+            @assert rw.waitingwriter !== nothing
             schedule(rw.waitingwriter)
+            rw.waitingwriter = nothing
         end
     end
 else
@@ -289,7 +310,9 @@ else
         # there's a pending write, check if we're the last reader
         if (@atomic :acquire_release rw.readerwait -= 1) == 0
             # Last reader, wake up the writer.
+            @assert rw.waitingwriter !== nothing
             schedule(rw.waitingwriter)
+            rw.waitingwriter = nothing
         end
     end
 end
@@ -333,7 +356,8 @@ else
         # otherwise, there are readers, so we need to wait for them to finish
         # we do this by setting ourselves as the waiting writer
         # and wait for the last reader to re-schedule us
-        @atomic rw.waitingwriter = current_task()
+        @assert rw.waitingwriter === nothing
+        rw.waitingwriter = current_task()
         wait()
     end
 end
