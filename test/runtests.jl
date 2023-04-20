@@ -209,6 +209,7 @@ using Test, ConcurrentUtilities
     end
 
     include("concurrentstack.jl")
+    include("pools.jl")
 end
 
     # @testset "@wkspawn" begin
