@@ -17,9 +17,10 @@ end
 
 ConcurrentStack{T}() where {T} = ConcurrentStack{T}(ReentrantLock(), nothing)
 
-function Base.push!(stack::ConcurrentStack{T}, v) where {T}
+function Base.push!(stack::ConcurrentStack{T}, v, node::Node{T}=Node{T}()) where {T}```
     v === nothing && throw(ArgumentError("cannot push nothing onto a ConcurrentStack"))
     v = convert(T, v)
+    node.value = v
     lock(stack.lock) do
         node.next = stack.next
         stack.next = node
