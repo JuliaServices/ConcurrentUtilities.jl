@@ -2,8 +2,10 @@
 @static if VERSION < v"1.7"
 
 mutable struct Node{T}
-    value::T
     next::Union{Node{T},Nothing}
+    value::T
+    Node{T}(value::T) where {T} = new{T}(nothing, value)
+    Node{T}() where {T} = new{T}(nothing)
 end
 
 Node{T}(value::T) where {T} = Node{T}(value, nothing)
@@ -18,7 +20,6 @@ ConcurrentStack{T}() where {T} = ConcurrentStack{T}(ReentrantLock(), nothing)
 function Base.push!(stack::ConcurrentStack{T}, v) where {T}
     v === nothing && throw(ArgumentError("cannot push nothing onto a ConcurrentStack"))
     v = convert(T, v)
-    node = Node{T}(v)
     lock(stack.lock) do
         node.next = stack.next
         stack.next = node
@@ -26,7 +27,7 @@ function Base.push!(stack::ConcurrentStack{T}, v) where {T}
     return stack
 end
 
-function Base.pop!(stack::ConcurrentStack)
+function _popnode!(stack::ConcurrentStack{T}) where {T}
     lock(stack.lock) do
         node = stack.next
         node === nothing && return nothing
@@ -35,14 +36,20 @@ function Base.pop!(stack::ConcurrentStack)
     end
 end
     
+function Base.pop!(stack::ConcurrentStack)
+    node = popnode!(stack)
+    return node === nothing ? node : node.value
+end
+
 else
     
 mutable struct Node{T}
-    value::T
     @atomic next::Union{Node{T},Nothing}
+    value::T
+    Node{T}(value::T) where {T} = new{T}(nothing, value)
+    Node{T}() where {T} = new{T}(nothing)
 end
 
-Node{T}(value::T) where {T} = Node{T}(value, nothing)
 
 mutable struct ConcurrentStack{T}
     @atomic next::Union{Node{T},Nothing}
@@ -50,10 +57,10 @@ end
 
 ConcurrentStack{T}() where {T} = ConcurrentStack{T}(nothing)
 
-function Base.push!(stack::ConcurrentStack{T}, v) where {T}
+function Base.push!(stack::ConcurrentStack{T}, v, node::Node{T}=Node{T}()) where {T}
     v === nothing && throw(ArgumentError("cannot push nothing onto a ConcurrentStack"))
     v = convert(T, v)
-    node = Node{T}(v)
+    node.value = v
     next = @atomic stack.next
     while true
         @atomic node.next = next
@@ -64,12 +71,17 @@ function Base.push!(stack::ConcurrentStack{T}, v) where {T}
 end
 
 function Base.pop!(stack::ConcurrentStack)
+    node = popnode!(stack)
+    return node === nothing ? node : node.value
+end
+
+function _popnode!(stack::ConcurrentStack{T}) where {T}
     while true
         node = @atomic stack.next
         node === nothing && return nothing
         next = @atomic node.next
         next, ok = @atomicreplace(stack.next, node => next)
-        ok && return node.value
+        ok && return node
     end
 end
 

@@ -1,6 +1,6 @@
 module Pools
 
-import ..ConcurrentStack, ..Lockable
+import ..ConcurrentStack, ..Node, ..Lockable, .._popnode!
 
 export Pool, acquire, release
 
@@ -27,12 +27,25 @@ any object for reuse.
 struct Pool{K, T}
     sem::Semaphore
     values::Lockable{Dict{K, ConcurrentStack{T}}}
+    nodepool::Vector{Node{T}}
 end
 
-Pool(T; max::Int=typemax(Int)) = Pool{Nothing, T}(Semaphore(max), Lockable(Dict{Nothing, ConcurrentStack{T}}()))
-Pool(K, T; max::Int=typemax(Int)) = Pool{K, T}(Semaphore(max), Lockable(Dict{K, ConcurrentStack{T}}()))
-
+function Pool(T; max::Union{Nothing,Int}=nothing) 
+    return Pool{Nothing, T}(
+        Semaphore(something(max, typemax(Int))), 
+        Lockable(Dict{Nothing, ConcurrentStack{T}}()),
+        sizehint!([], something(max, 64))
+    )
+end
+function Pool(K, T; max::Union{Nothing,Int}=nothing) 
+    return Pool{K, T}(
+        Semaphore(something(max, typemax(Int))), 
+        Lockable(Dict{K, ConcurrentStack{T}}()),
+        sizehint!([], something(max, 64))
+    )
+end
 Base.empty!(pool::Pool) = Base.@lock pool.values empty!(pool.values[])
+_popnode!(pool::Pool{K,T}) where {K,T} = isempty(pool.nodepool) ? Node{T}() : pop!(pool.nodepool)
 
 TRUE(x) = true
 
@@ -57,13 +70,19 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
         forcenew && return f()
         # otherwise, check if there's an existing object in the pool to reuse
         objs = Base.@lock pool.values get!(() -> ConcurrentStack{T}(), pool.values[], key)
-        obj = pop!(objs)
-        while obj !== nothing
+        prev_node = node = _popnode!(objs)
+        while node !== nothing
+            obj = node.value
             # if the object is valid, return it
-            isvalid(obj) && return obj
+            if isvalid(obj)
+                Base.@lock pool.values push!(pool.nodepool, node)
+                return obj
+            end
             # otherwise, try the next object
-            obj = pop!(objs)
+            prev_node = node
+            node = _popnode!(objs)
         end
+        isnothing(prev_node) || push!(pool.nodepool, prev_node)
         # if we get here, we didn't find any valid objects, so we'll just create a new one
         return f()
     catch
@@ -92,8 +111,10 @@ function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) whe
         Base.@lock pool.sem.cond_wait begin
             if pool.sem.curr_cnt > 0
                 # if the key is invalid, we'll just let the KeyError propagate
-                objs = Base.@lock pool.values pool.values[][key]
-                push!(objs, obj)
+                Base.@lock pool.values begin
+                    objs =  pool.values[][key]
+                    push!(objs, obj, _popnode!(pool))
+                end
             end
         end
         # we don't throw an error or unlock in the invalid case, because we'll let
