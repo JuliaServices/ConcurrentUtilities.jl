@@ -37,7 +37,7 @@ function _popnode!(stack::ConcurrentStack{T}) where {T}
 end
     
 function Base.pop!(stack::ConcurrentStack)
-    node = popnode!(stack)
+    node = _popnode!(stack)
     return node === nothing ? node : node.value
 end
 
@@ -71,7 +71,7 @@ function Base.push!(stack::ConcurrentStack{T}, v, node::Node{T}=Node{T}()) where
 end
 
 function Base.pop!(stack::ConcurrentStack)
-    node = popnode!(stack)
+    node = _popnode!(stack)
     return node === nothing ? node : node.value
 end
 

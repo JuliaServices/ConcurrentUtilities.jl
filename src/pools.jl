@@ -28,20 +28,25 @@ struct Pool{K, T}
     sem::Semaphore
     values::Lockable{Dict{K, ConcurrentStack{T}}}
     nodepool::Vector{Node{T}}
+    maxnodes::Int
 end
 
-function Pool(T; max::Union{Nothing,Int}=nothing) 
+function Pool(T; max::Union{Nothing,Int}=nothing)
+    maxnodes = something(max, 128)
     return Pool{Nothing, T}(
         Semaphore(something(max, typemax(Int))), 
         Lockable(Dict{Nothing, ConcurrentStack{T}}()),
-        sizehint!([], something(max, 64))
+        sizehint!([], min(maxnodes, 128)),
+        maxnodes,
     )
 end
 function Pool(K, T; max::Union{Nothing,Int}=nothing) 
+    maxnodes = something(max, 128)
     return Pool{K, T}(
         Semaphore(something(max, typemax(Int))), 
         Lockable(Dict{K, ConcurrentStack{T}}()),
-        sizehint!([], something(max, 64))
+        sizehint!([], min(maxnodes, 128)),
+        maxnodes,
     )
 end
 Base.empty!(pool::Pool) = Base.@lock pool.values empty!(pool.values[])
@@ -75,7 +80,7 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
             obj = node.value
             # if the object is valid, return it
             if isvalid(obj)
-                Base.@lock pool.values push!(pool.nodepool, node)
+                length(pool.nodepool) < pool.maxnodes && Base.@lock pool.values push!(pool.nodepool, node)
                 return obj
             end
             # otherwise, try the next object
