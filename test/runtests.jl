@@ -107,6 +107,9 @@ using Test, ConcurrentUtilities
     end
 
     @testset "ReadWriteLock" begin
+@static if VERSION < v"1.8"
+        @warn "skipping ReadWriteLock tests since VERSION ($VERSION) < v\"1.8\""
+else
         rw = ReadWriteLock()
         println("test read is blocked while writing")
         lock(rw)
@@ -207,6 +210,7 @@ using Test, ConcurrentUtilities
         @test thirdReaderLocked[]
         @test fetch(r3)
         @test !islocked(rw)
+end # @static if VERSION < v"1.8"
     end
 
     # track all workers every created
