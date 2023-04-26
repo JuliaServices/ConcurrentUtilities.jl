@@ -146,7 +146,7 @@ else
         put!(c, nothing)
         @test fetch(t)
 
-        println("test write is blocked until readers done")
+        println("test new reads blocked on pending write, and vice versa")
         readlock(rw)
         # readlock doesn't count as "locked"
         @test !islocked(rw)
@@ -196,6 +196,16 @@ else
         # but third reader didn't lock because it's blocked
         # on a _pending_ write
         @test !thirdReaderLocked[]
+        # second writer, which should wait til after the already-queued third reader
+        wc2 = Channel()
+        t2 = @async begin
+            put!(wc2, nothing)
+            lock(rw)
+            take!(wc2)
+            unlock(rw)
+            true
+        end
+        take!(wc2)
         # unblock r2
         put!(c, nothing)
         # it should finish
@@ -209,6 +219,9 @@ else
         put!(c2, nothing)
         @test thirdReaderLocked[]
         @test fetch(r3)
+        # only now r3 has finished should t2 have lock
+        put!(wc2, nothing)
+        @test fetch(t2)
         @test !islocked(rw)
 end # @static if VERSION < v"1.8"
     end
