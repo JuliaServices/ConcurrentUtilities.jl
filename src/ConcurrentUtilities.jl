@@ -4,6 +4,7 @@ export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunloc
     Workers, remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException,
     Pool, acquire, release, drain!
 
+include("try_with_timeout.jl")
 include("workers.jl")
 using .Workers
 include("lockable.jl")
