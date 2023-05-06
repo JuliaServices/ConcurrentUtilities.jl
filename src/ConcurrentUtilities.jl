@@ -2,7 +2,7 @@ module ConcurrentUtilities
 
 export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn,
     Workers, remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException,
-    Pool, acquire, release, drain!, try_with_timeout
+    Pool, acquire, release, drain!, try_with_timeout, TimeoutError
 
 include("try_with_timeout.jl")
 include("workers.jl")
