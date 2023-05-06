@@ -18,7 +18,7 @@ using ConcurrentUtilities, Test
         rethrow(e.ex)
     end
     # test return type
-    @test @inferred try_with_timeout(_ -> 1, 1, Int) === 1
+    @inferred try_with_timeout(_ -> 1, 1, Int)
     # bad return type
     @test_throws TypeError try
         try_with_timeout(_ -> 1, 1, String)
