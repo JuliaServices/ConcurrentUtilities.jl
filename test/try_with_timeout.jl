@@ -4,7 +4,7 @@ using ConcurrentUtilities, Test
     # test non time out
     @test try_with_timeout(_ -> 1, 1) === 1
     # test time out
-    @test_throws TimeoutError try_with_timeout(1) do timedout
+    @test_throws TimeoutException try_with_timeout(1) do timedout
         sleep(3)
         # this is a weird place to test, but it _does_
         # print a failure if it doesn't work
