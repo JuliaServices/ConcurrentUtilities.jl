@@ -67,6 +67,11 @@ julia> try_with_timeout(1) do timedout
     end
 end
 
+julia> try_with_timeout(1) do timedout
+    sleep(3)
+    timedout[] && abort_gracefully()
+end
+```
 """
 function try_with_timeout(f, timeout, ::Type{T}=Any) where {T}
     ch = Channel{T}(0)
