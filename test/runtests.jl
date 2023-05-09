@@ -243,6 +243,7 @@ end # @static if VERSION < v"1.8"
         @test isempty(w.futures)
     end
     include("pools.jl")
+    include("try_with_timeout.jl")
 end
 
     # @testset "@wkspawn" begin

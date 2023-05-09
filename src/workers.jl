@@ -4,20 +4,7 @@ using Sockets, Serialization
 
 export Worker, remote_eval, remote_fetch, terminate!, WorkerTerminatedException
 
-function try_with_timeout(f, timeout)
-    ch = Channel(0)
-    timer = Timer(tm -> close(ch, ErrorException("`$f` timed out after $timeout seconds")), timeout)
-    Threads.@spawn begin
-        try
-            put!(ch, $f())
-        catch e
-            close(ch, CapturedException(e, catch_backtrace()))
-        finally
-            close(timer)
-        end
-    end
-    return take!(ch)
-end
+import ..try_with_timeout
 
 # RPC framework
 struct Request
@@ -186,7 +173,7 @@ function Worker(;
 
     ## connect to the worker process with timeout
     try
-        pipe = try_with_timeout(() -> Sockets.accept(server), connect_timeout)
+        pipe = try_with_timeout(x -> Sockets.accept(server), connect_timeout)
         # create worker
 @static if VERSION < v"1.7"
         w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), Threads.Atomic{Bool}(false))
