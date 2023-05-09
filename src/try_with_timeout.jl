@@ -59,6 +59,14 @@ Stacktrace:
 
 julia> try_with_timeout(_ -> 1, 1, Int)
 1
+
+# usage with `TimedOut`
+julia> try_with_timeout(1) do timedout
+    while !timedout[]
+        # do iterative computation that may take too long
+    end
+end
+
 """
 function try_with_timeout(f, timeout, ::Type{T}=Any) where {T}
     ch = Channel{T}(0)
