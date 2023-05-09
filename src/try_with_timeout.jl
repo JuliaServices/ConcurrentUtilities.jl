@@ -7,6 +7,10 @@ struct TimeoutError <: Exception
     timeout::Float64
 end
 
+function Base.showerror(io::IO, te::TimeoutError)
+    print(io, "TimeoutError: try_with_timeout timed out after $(te.timeout) seconds")
+end
+
 """
     TimedOut
 
