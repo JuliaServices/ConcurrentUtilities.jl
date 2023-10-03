@@ -4,6 +4,9 @@ using ConcurrentUtilities.Pools, Test
     pool_size = length∘Pools.values
     @testset "nonkeyed and pool basics" begin
         pool = Pool{Int}(3)
+        @test keytype(pool) === Nothing
+        @test valtype(pool) === Int
+
         @test Pools.max(pool) == 3
         @test Pools.permits(pool) == 0
         @test Pools.depth(pool) == 0
@@ -113,6 +116,9 @@ using ConcurrentUtilities.Pools, Test
     @testset "keyed pool" begin
         # now test a keyed pool
         pool = Pool{String, Int}(3)
+        @test keytype(pool) === String
+        @test valtype(pool) === Int
+
         @test Pools.max(pool) == 3
         @test Pools.permits(pool) == 0
         @test Pools.depth(pool) == 0
