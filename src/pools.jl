@@ -162,17 +162,13 @@ just the "permit" will be returned to the pool.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)
-    keyed = iskeyed(pool)
     Base.@lock pool.lock begin
-        # if keyed && !haskey(pool.keyedvalues, key)
-        #     throw(Base.KeyError(key))
-        # end
         # return the permit
         releasepermit(pool)
         # if we're given an object, we'll put it back in the pool
         if obj !== nothing
             # if an invalid key is provided, we let the KeyError propagate
-            objs = keyed ? pool.keyedvalues[key] : pool.values
+            objs = iskeyed(pool) ? pool.keyedvalues[key] : pool.values
             push!(objs, obj)
         end
     end
