@@ -51,6 +51,12 @@ safesizehint!(x, n) = sizehint!(x, min(4096, n))
 # determines whether we'll look up object caches in .keyedvalues or .values
 iskeyed(::Pool{K}) where {K} = K !== Nothing
 
+Base.keytype(::Type{<:Pool{K}}) where {K} = K
+Base.keytype(p::Pool) = keytype(typeof(p))
+
+Base.valtype(::Type{<:Pool{<:Any, T}}) where {T} = T
+Base.valtype(p::Pool) = valtype(typeof(p))
+
 """
     Pools.max(pool::Pool) -> Int
 
