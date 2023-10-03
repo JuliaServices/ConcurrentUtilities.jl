@@ -52,6 +52,29 @@ safesizehint!(x, n) = sizehint!(x, min(4096, n))
 iskeyed(::Pool{K}) where {K} = K !== Nothing
 
 """
+    Pools.max(pool::Pool) -> Int
+
+Return the maximum number of objects permitted to be in use at the same time.
+See `Pools.permits(pool)` for the number of objects currently in use.
+"""
+max(pool::Pool) = Base.@lock pool.lock pool.max
+
+"""
+    Pools.permits(pool::Pool) -> Int
+
+Return the number of objects currently in use. Less than or equal to `Pools.max(pool)`.
+"""
+permits(pool::Pool) = Base.@lock pool.lock pool.cur
+
+"""
+    Pools.depth(pool::Pool) -> Int
+
+Return the number of objects in the pool available for reuse.
+"""
+depth(pool::Pool) = Base.@lock pool.lock mapreduce(length, +, values(pool.keyedvalues); init=0)
+depth(pool::Pool{Nothing}) = Base.@lock pool.lock length(pool.values)
+
+"""
     drain!(pool)
 
 Remove all objects from the pool for reuse, but do not release any active acquires.
@@ -133,13 +156,17 @@ just the "permit" will be returned to the pool.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)
+    keyed = iskeyed(pool)
     Base.@lock pool.lock begin
+        # if keyed && !haskey(pool.keyedvalues, key)
+        #     throw(Base.KeyError(key))
+        # end
         # return the permit
         releasepermit(pool)
         # if we're given an object, we'll put it back in the pool
         if obj !== nothing
             # if an invalid key is provided, we let the KeyError propagate
-            objs = iskeyed(pool) ? pool.keyedvalues[key] : pool.values
+            objs = keyed ? pool.keyedvalues[key] : pool.values
             push!(objs, obj)
         end
     end
