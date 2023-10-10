@@ -4,8 +4,8 @@ export Pool, acquire, release, drain!
 import Base: acquire, release
 
 """
-    Pool{T}(max::Int=4096)
-    Pool{K, T}(max::Int=4096)
+    Pool{T}(limit::Int=4096)
+    Pool{K, T}(limit::Int=4096)
 
 A threadsafe object for managing a pool of objects of type `T`, optionally keyed by objects
 of type `K`.
@@ -15,8 +15,8 @@ function that returns a new object of type `T`.
 The `key` argument is optional and can be used to lookup objects that match a certain criteria
 (a `Dict` is used internally, so matching is `isequal`).
 
-The `max` argument will limit the number of objects that can be in use at any given time.
-If the max usage has been reached, `acquire` will block until an object is released
+The `limit` argument will limit the number of objects that can be in use at any given time.
+If the limit has been reached, `acquire` will block until an object is released
 via `release`.
 
 - `release(pool, obj)` will return the object to the pool for reuse.
@@ -24,21 +24,21 @@ via `release`.
 - `drain!` can be used to remove objects that have been returned to the pool for reuse;
   it does *not* release any objects that are in use.
 
-See also `acquire`, `release`, `Pools.max_usage`, `Pools.in_use`, `Pools.in_pool`, `drain!`.
+See also `acquire`, `release`, `Pools.limit`, `Pools.in_use`, `Pools.in_pool`, `drain!`.
 """
 mutable struct Pool{K, T}
     lock::Threads.Condition
-    max::Int
+    limit::Int
     cur::Int
     keyedvalues::Dict{K, Vector{T}}
     values::Vector{T}
 
-    function Pool{K, T}(max::Int=4096) where {K, T}
+    function Pool{K, T}(limit::Int=4096) where {K, T}
         T === Nothing && throw(ArgumentError("Pool type can not be `Nothing`"))
-        x = new(Threads.Condition(), max, 0)
+        x = new(Threads.Condition(), limit, 0)
         if K === Nothing
             x.values = T[]
-            safesizehint!(x.values, max)
+            safesizehint!(x.values, limit)
         else
             x.keyedvalues = Dict{K, Vector{T}}()
         end
@@ -46,7 +46,7 @@ mutable struct Pool{K, T}
     end
 end
 
-Pool{T}(max::Int=4096) where {T} = Pool{Nothing, T}(max)
+Pool{T}(limit::Int=4096) where {T} = Pool{Nothing, T}(limit)
 
 safesizehint!(x, n) = sizehint!(x, min(4096, n))
 
@@ -60,17 +60,17 @@ Base.valtype(::Type{<:Pool{<:Any, T}}) where {T} = T
 Base.valtype(p::Pool) = valtype(typeof(p))
 
 """
-    Pools.max_usage(pool::Pool) -> Int
+    Pools.limit(pool::Pool) -> Int
 
 Return the maximum number of objects permitted to be in use at the same time.
 See `Pools.in_use(pool)` for the number of objects currently in use.
 """
-max_usage(pool::Pool) = Base.@lock pool.lock pool.max
+limit(pool::Pool) = Base.@lock pool.lock pool.limit
 
 """
     Pools.in_use(pool::Pool) -> Int
 
-Return the number of objects currently in use. Less than or equal to `Pools.max_usage(pool)`.
+Return the number of objects currently in use. Less than or equal to `Pools.limit(pool)`.
 """
 in_use(pool::Pool) = Base.@lock pool.lock pool.cur
 
@@ -123,19 +123,19 @@ The `forcenew` keyword argument can be used to force the creation of a new objec
 The `isvalid` keyword argument can be used to specify a function that will be called to determine if an object is still valid
 for reuse. By default, all objects are considered valid.
 If there are no objects available for reuse, `f` will be called to create a new object.
-If the pool is already at its maximum capacity, `acquire` will block until an object is returned to the pool via `release`.
+If the pool is already at its usage limit, `acquire` will block until an object is returned to the pool via `release`.
 """
 function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, isvalid::Function=TRUE) where {K, T}
     key isa K || keyerror(key, K)
     Base.@lock pool.lock begin
         # first get a permit
-        while pool.cur >= pool.max
+        while pool.cur >= pool.limit
             wait(pool.lock)
         end
         pool.cur += 1
         # now see if we can get an object from the pool for reuse
         if !forcenew
-            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.max), pool.keyedvalues, key) : pool.values
+            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
             while !isempty(objs)
                 obj = pop!(objs)
                 isvalid(obj) && return obj

@@ -7,7 +7,7 @@ using ConcurrentUtilities.Pools, Test
         @test keytype(pool) === Nothing
         @test valtype(pool) === Int
 
-        @test Pools.max_usage(pool) == 3
+        @test Pools.limit(pool) == 3
         @test Pools.in_use(pool) == 0
         @test Pools.in_pool(pool) == 0
 
@@ -15,7 +15,7 @@ using ConcurrentUtilities.Pools, Test
         x1 = acquire(() -> 1, pool)
         # no existing objects in the pool, so our function was called to create a new one
         @test x1 == 1
-        @test Pools.max_usage(pool) == 3
+        @test Pools.limit(pool) == 3
         @test Pools.in_use(pool) == 1
         @test Pools.in_pool(pool) == 0
 
@@ -42,8 +42,8 @@ using ConcurrentUtilities.Pools, Test
         @test Pools.in_use(pool) == 3
         @test Pools.in_pool(pool) == 0
 
-        # the pool is now at `Pools.max_usage`, so the next acquire will block until an object is released
-        @test Pools.in_use(pool) == Pools.max_usage(pool)
+        # the pool is now at `Pools.limit`, so the next acquire will block until an object is released
+        @test Pools.in_use(pool) == Pools.limit(pool)
         tsk = @async acquire(() -> 4, pool; forcenew=true)
         yield()
         @test !istaskdone(tsk)
@@ -119,7 +119,7 @@ using ConcurrentUtilities.Pools, Test
         @test keytype(pool) === String
         @test valtype(pool) === Int
 
-        @test Pools.max_usage(pool) == 3
+        @test Pools.limit(pool) == 3
         @test Pools.in_use(pool) == 0
         @test Pools.in_pool(pool) == 0
 
@@ -156,7 +156,7 @@ using ConcurrentUtilities.Pools, Test
 
         # the pool is now at capacity, so the next acquire will block until an object is released
         # even though we've acquired using different keys, the capacity is shared across the pool
-        @test Pools.in_use(pool) == Pools.max_usage(pool)
+        @test Pools.in_use(pool) == Pools.limit(pool)
         tsk = @async acquire(() -> 4, pool, "c"; forcenew=true)
         yield()
         @test !istaskdone(tsk)
