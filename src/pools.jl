@@ -25,6 +25,7 @@ via `release`.
   it does *not* release any objects that are in use.
 
 See also `acquire`, `release`, `Pools.limit`, `Pools.in_use`, `Pools.in_pool`, `drain!`.
+The key and object types can be inspected with `keytype` and `valtype` respectively.
 """
 mutable struct Pool{K, T}
     lock::Threads.Condition
@@ -53,9 +54,20 @@ safesizehint!(x, n) = sizehint!(x, min(4096, n))
 # determines whether we'll look up object caches in .keyedvalues or .values
 iskeyed(::Pool{K}) where {K} = K !== Nothing
 
+"""
+    keytype(::Pool)
+
+Return the type of the keys for the pool.
+If the pool is not keyed, this will return `Nothing`.
+"""
 Base.keytype(::Type{<:Pool{K}}) where {K} = K
 Base.keytype(p::Pool) = keytype(typeof(p))
 
+"""
+    valtype(::Pool)
+
+Return the type of the objects that can be stored in the pool.
+"""
 Base.valtype(::Type{<:Pool{<:Any, T}}) where {T} = T
 Base.valtype(p::Pool) = valtype(typeof(p))
 
