@@ -4,39 +4,42 @@ export Pool, acquire, release, drain!
 import Base: acquire, release
 
 """
-    Pool{T}(max::Int=4096)
-    Pool{K, T}(max::Int=4096)
+    Pool{T}(limit::Int=4096)
+    Pool{K, T}(limit::Int=4096)
 
 A threadsafe object for managing a pool of objects of type `T`, optionally keyed by objects
-of type `K`. Objects can be requested by calling `acquire(f, pool, [key])`, where `f` is a
+of type `K`.
+
+Objects can be requested by calling `acquire(f, pool, [key])`, where `f` is a
 function that returns a new object of type `T`.
 The `key` argument is optional and can be used to lookup objects that match a certain criteria
-(a Dict is used internally, so matching is `isequal`).
+(a `Dict` is used internally, so matching is `isequal`).
 
-The `max` argument will limit the number of objects
-that can be acquired at any given time. If the limit has been reached, `acquire` will
-block until an object is returned to the pool via `release`.
+The `limit` argument will limit the number of objects that can be in use at any given time.
+If the limit has been reached, `acquire` will block until an object is released
+via `release`.
 
-By default, `release(pool, obj)` will return the object to the pool for reuse.
-`release(pool)` will return the "permit" to the pool while not returning
-any object for reuse.
+- `release(pool, obj)` will return the object to the pool for reuse.
+- `release(pool)` will decrement the number in use but not return any object for reuse.
+- `drain!` can be used to remove objects that have been returned to the pool for reuse;
+  it does *not* release any objects that are in use.
 
-`drain!` can be used to remove any cached objects for reuse, but it does *not* release
-any active acquires.
+See also `acquire`, `release`, `Pools.limit`, `Pools.in_use`, `Pools.in_pool`, `drain!`.
+The key and object types can be inspected with `keytype` and `valtype` respectively.
 """
 mutable struct Pool{K, T}
     lock::Threads.Condition
-    max::Int
+    limit::Int
     cur::Int
     keyedvalues::Dict{K, Vector{T}}
     values::Vector{T}
 
-    function Pool{K, T}(max::Int=4096) where {K, T}
+    function Pool{K, T}(limit::Int=4096) where {K, T}
         T === Nothing && throw(ArgumentError("Pool type can not be `Nothing`"))
-        x = new(Threads.Condition(), max, 0)
+        x = new(Threads.Condition(), limit, 0)
         if K === Nothing
             x.values = T[]
-            safesizehint!(x.values, max)
+            safesizehint!(x.values, limit)
         else
             x.keyedvalues = Dict{K, Vector{T}}()
         end
@@ -44,12 +47,52 @@ mutable struct Pool{K, T}
     end
 end
 
-Pool{T}(max::Int=4096) where {T} = Pool{Nothing, T}(max)
+Pool{T}(limit::Int=4096) where {T} = Pool{Nothing, T}(limit)
 
 safesizehint!(x, n) = sizehint!(x, min(4096, n))
 
 # determines whether we'll look up object caches in .keyedvalues or .values
 iskeyed(::Pool{K}) where {K} = K !== Nothing
+
+"""
+    keytype(::Pool)
+
+Return the type of the keys for the pool.
+If the pool is not keyed, this will return `Nothing`.
+"""
+Base.keytype(::Type{<:Pool{K}}) where {K} = K
+Base.keytype(p::Pool) = keytype(typeof(p))
+
+"""
+    valtype(::Pool)
+
+Return the type of the objects that can be stored in the pool.
+"""
+Base.valtype(::Type{<:Pool{<:Any, T}}) where {T} = T
+Base.valtype(p::Pool) = valtype(typeof(p))
+
+"""
+    Pools.limit(pool::Pool) -> Int
+
+Return the maximum number of objects permitted to be in use at the same time.
+See `Pools.in_use(pool)` for the number of objects currently in use.
+"""
+limit(pool::Pool) = Base.@lock pool.lock pool.limit
+
+"""
+    Pools.in_use(pool::Pool) -> Int
+
+Return the number of objects currently in use. Less than or equal to `Pools.limit(pool)`.
+"""
+in_use(pool::Pool) = Base.@lock pool.lock pool.cur
+
+"""
+    Pools.in_pool(pool::Pool) -> Int
+
+Return the number of objects in the pool available for reuse.
+"""
+in_pool(pool::Pool) = Base.@lock pool.lock mapreduce(length, +, values(pool.keyedvalues); init=0)
+in_pool(pool::Pool{Nothing}) = Base.@lock pool.lock length(pool.values)
 
 """
     drain!(pool)
@@ -72,7 +115,7 @@ end
 TRUE(x) = true
 
 @noinline keyerror(key, K) = throw(ArgumentError("invalid key `$key` provided for pool key type $K"))
-@noinline releaseerror() = throw(ArgumentError("cannot release permit when pool is empty"))
+@noinline releaseerror() = throw(ArgumentError("cannot release when no objects are in use"))
 
 # NOTE: assumes you have the lock!
 function releasepermit(pool::Pool)
@@ -92,19 +135,19 @@ The `forcenew` keyword argument can be used to force the creation of a new objec
 The `isvalid` keyword argument can be used to specify a function that will be called to determine if an object is still valid
 for reuse. By default, all objects are considered valid.
 If there are no objects available for reuse, `f` will be called to create a new object.
-If the pool is already at its maximum capacity, `acquire` will block until an object is returned to the pool via `release`.
+If the pool is already at its usage limit, `acquire` will block until an object is returned to the pool via `release`.
 """
 function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, isvalid::Function=TRUE) where {K, T}
     key isa K || keyerror(key, K)
     Base.@lock pool.lock begin
         # first get a permit
-        while pool.cur >= pool.max
+        while pool.cur >= pool.limit
             wait(pool.lock)
         end
         pool.cur += 1
         # now see if we can get an object from the pool for reuse
         if !forcenew
-            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.max), pool.keyedvalues, key) : pool.values
+            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
             while !isempty(objs)
                 obj = pop!(objs)
                 isvalid(obj) && return obj
@@ -126,10 +169,10 @@ end
     release(pool::Pool{K, T}, obj::T)
     release(pool::Pool{K, T})
 
-Return an object to a `pool`, optionally keyed by the provided `key`.
+Release an object from usage by a `pool`, optionally keyed by the provided `key`.
 If `obj` is provided, it will be returned to the pool for reuse.
 Otherwise, if `nothing` is returned, or `release(pool)` is called,
-just the "permit" will be returned to the pool.
+the usage count will be decremented without an object being returned to the pool for reuse.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)

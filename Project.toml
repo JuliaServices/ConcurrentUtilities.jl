@@ -1,7 +1,7 @@
 name = "ConcurrentUtilities"
 uuid = "f0e56b4a-5159-44fe-b623-3e5288b988bb"
 authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "2.2.1"
+version = "2.3.0"
 
 [deps]
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
