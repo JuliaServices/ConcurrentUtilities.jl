@@ -7,7 +7,7 @@ export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunloc
 include("try_with_timeout.jl")
 include("workers.jl")
 using .Workers
-include("lockable.jl")
+isdefined(Base, :Lockable) ? (using Base: Lockable) : include("lockable.jl") # https://github.com/JuliaLang/julia/pull/52898
 include("spawn.jl")
 include("synchronizer.jl")
 include("rwlock.jl")
