@@ -77,7 +77,7 @@ function try_with_timeout(f, timeout, ::Type{T}=Any) where {T}
     ch = Channel{T}(0)
     x = TimedOut(ch)
     timer = Timer(tm -> !isready(ch) && close(ch, TimeoutException(timeout)), timeout)
-    Threads.@spawn begin
+    @samethreadpool_spawn begin
         try
             put!(ch, $f(x)::T)
         catch e
