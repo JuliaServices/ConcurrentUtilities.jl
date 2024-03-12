@@ -26,4 +26,11 @@ using ConcurrentUtilities, Test
         @test e isa CapturedException
         rethrow(e.ex)
     end
+
+    # try_with_timeout should not migrate the task to a different thread pool
+    if isdefined(Base.Threads, :threadpool)
+        @test try_with_timeout(_ -> Threads.threadpool(), 1) == Threads.threadpool()
+        @test read(`julia -t 1,1 -E 'using ConcurrentUtilities; try_with_timeout(_ -> Threads.threadpool(), 1)'`, String) == ":interactive\n"
+        @test read(`julia -t 1,1 -E 'using ConcurrentUtilities; fetch(Threads.@spawn begin try_with_timeout(_ -> Threads.threadpool(), 1) end)'`, String) == ":default\n"
+    end
 end

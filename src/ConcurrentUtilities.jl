@@ -4,6 +4,14 @@ export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunloc
     Workers, remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException,
     Pool, acquire, release, drain!, try_with_timeout, TimeoutException
 
+macro samethreadpool_spawn(expr)
+    if isdefined(Base.Threads, :threadpool)
+        esc(:(Threads.@spawn Threads.threadpool() $expr))
+    else
+        esc(:(Threads.@spawn $expr))
+    end
+end
+
 include("try_with_timeout.jl")
 include("workers.jl")
 using .Workers
