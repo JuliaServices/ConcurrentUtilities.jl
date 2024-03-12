@@ -5,7 +5,7 @@ export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunloc
     Pool, acquire, release, drain!, try_with_timeout, TimeoutException
 
 macro samethreadpool_spawn(expr)
-    if isdefined(Base.Threads, :threadpool)
+    if VERSION >= v"1.9.2"
         esc(:(Threads.@spawn Threads.threadpool() $expr))
     else
         esc(:(Threads.@spawn $expr))
