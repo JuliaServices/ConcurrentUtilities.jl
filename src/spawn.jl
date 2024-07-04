@@ -15,7 +15,7 @@ macro spawn(thunk)
     esc(quote
         tsk = @task $thunk
         tsk.storage = current_task().storage
-        put!(ConcurrentUtilities.WORK_QUEUE, tsk)
+        put!($WORK_QUEUE, tsk)
         tsk
     end)
 end
@@ -36,7 +36,7 @@ macro spawn(passthroughstorage, thunk)
         if $passthroughstorage
             tsk.storage = current_task().storage
         end
-        put!(ConcurrentUtilities.WORK_QUEUE, tsk)
+        put!($WORK_QUEUE, tsk)
         tsk
     end)
 end
