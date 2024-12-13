@@ -75,15 +75,25 @@ end
 """
 function try_with_timeout(f, timeout, ::Type{T}=Any) where {T}
     ch = Channel{T}(0)
-    x = TimedOut(ch)
-    timer = Timer(tm -> !isready(ch) && close(ch, TimeoutException(timeout)), timeout)
+    timer = Timer(timeout)
     @samethreadpool_spawn begin
+        _ch = $ch
         try
-            put!(ch, $f(x)::T)
+            wait($timer)
+            !isready(_ch) && close(_ch, TimeoutException($timeout))
         catch e
-            close(ch, CapturedException(e, catch_backtrace()))
+            e isa EOFError || close(_ch, CapturedException(e, catch_backtrace()))
+        end
+    end
+    @samethreadpool_spawn begin
+        _ch = $ch
+        x = TimedOut(_ch)
+        try
+            put!(_ch, $(f)(x)::T)
+        catch e
+            close(_ch, CapturedException(e, catch_backtrace()))
         finally
-            close(timer)
+            close($timer)
         end
     end
     return take!(ch)

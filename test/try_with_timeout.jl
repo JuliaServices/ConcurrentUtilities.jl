@@ -33,4 +33,11 @@ using ConcurrentUtilities, Test
         @test read(`julia -t 1,1 -E 'using ConcurrentUtilities; try_with_timeout(_ -> Threads.threadpool(), 1)'`, String) == ":interactive\n"
         @test read(`julia -t 1,1 -E 'using ConcurrentUtilities; fetch(Threads.@spawn begin try_with_timeout(_ -> Threads.threadpool(), 1) end)'`, String) == ":default\n"
     end
+
+    # Make sure the usage of Timer(f, timeout) constructor doesn't sticky the parent task
+    t = Threads.@spawn begin
+        try_with_timeout(_ -> sleep(1), 2)
+    end
+    wait(t)
+    @test !t.sticky
 end
