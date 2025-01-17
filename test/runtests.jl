@@ -226,6 +226,50 @@ else
 end # @static if VERSION < v"1.8"
     end
 
+    @testset "FIFOLock" begin
+@static if VERSION < v"1.10"
+        @warn "skipping FIFOLock tests since VERSION ($VERSION) < v\"1.10\""
+else
+        fl = FIFOLock()
+        lock(fl)
+        tot = 0
+        ttsks = Task[]
+        tordr = Int[]
+        try
+            # we assume here that the tasks spawned below run in the order
+            # they were spawned
+            for i in 1:16
+                t = Threads.@spawn begin
+                    lock(fl)
+                    try
+                        tot = tot + 1
+                        if tot != i
+                            error("non-atomic access in lock")
+                        end
+                        push!(tordr, i)
+                    finally
+                        unlock(fl)
+                    end
+                end
+                push!(ttsks, t)
+                sleep(0.1)
+            end
+        finally
+            unlock(fl)
+        end
+        for t in ttsks
+            @test try
+                wait(t)
+                true
+            catch
+                false
+            end
+        end
+        @test tot == 16
+        @test all([tordr[i] == i for i in 1:16])
+end # @static if VERSION < v"1.10"
+    end
+
     # track all workers every created
     ALL_WORKERS = []
     ConcurrentUtilities.Workers.GLOBAL_CALLBACK_PER_WORKER[] = w -> push!(ALL_WORKERS, w)
