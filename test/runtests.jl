@@ -227,37 +227,36 @@ end # @static if VERSION < v"1.8"
     end
 
     @testset "FIFOLock" begin
-@static if VERSION < v"1.10"
+@static if VERSION < v"1.10-"
         @warn "skipping FIFOLock tests since VERSION ($VERSION) < v\"1.10\""
 else
+        ctr_in = Threads.Atomic{Int}(1)
+        ctr_out = Threads.Atomic{Int}(1)
+        test_tasks = Task[]
+        sizehint!(test_tasks, 16)
+        tasks_in = zeros(Int, 16)
+        tasks_out = zeros(Int, 16)
+        tot = zeros(Int, 1)
         fl = FIFOLock()
         lock(fl)
-        tot = 0
-        ttsks = Task[]
-        tordr = Int[]
         try
-            # we assume here that the tasks spawned below run in the order
-            # they were spawned
             for i in 1:16
                 t = Threads.@spawn begin
+                    tasks_in[i] = Threads.atomic_add!(ctr_in, 1)
                     lock(fl)
                     try
-                        tot = tot + 1
-                        if tot != i
-                            error("non-atomic access in lock")
-                        end
-                        push!(tordr, i)
+                        tot[1] += 1
+                        tasks_out[i] = Threads.atomic_add!(ctr_out, 1)
                     finally
                         unlock(fl)
                     end
                 end
-                push!(ttsks, t)
-                sleep(0.1)
+                push!(test_tasks, t)
             end
         finally
             unlock(fl)
         end
-        for t in ttsks
+        for t in test_tasks
             @test try
                 wait(t)
                 true
@@ -265,8 +264,8 @@ else
                 false
             end
         end
-        @test tot == 16
-        @test all([tordr[i] == i for i in 1:16])
+        @test tot[1] == 16
+        @test tasks_out == tasks_in
 end # @static if VERSION < v"1.10"
     end
 

@@ -1,11 +1,18 @@
-@static if VERSION >= v"1.10"
+@static if VERSION >= v"1.10-"
 
 const LOCKED_BIT = 0b01
 
 """
     FIFOLock()
 
-Like Base.ReentrantLock, but with strict FIFO ordering.
+A reentrant lock similar to Base.ReentrantLock, but with strict FIFO ordering.
+
+Base.ReentrantLock allows tasks to "barge the lock", i.e. it is occasionally
+possible for a task to jump the queue of tasks waiting for the lock; this is
+intentional behavior to increase throughput as described
+[here](https://webkit.org/blog/6161/locking-in-webkit/).
+
+When fairness is more important than throughput, use this FIFOLock.
 """
 mutable struct FIFOLock <: AbstractLock
     @atomic locked_by::Union{Task, Nothing}
@@ -83,8 +90,7 @@ end
     try
         _trylock(l, ct) && return
         wait(c)
-        l.reentrancy_cnt = 0x0000_0001
-        @atomic :release l.locked_by = ct
+        # l.locked_by and l.reentrancy_cnt are set in unlock
     finally
         unlock(c)
     end
@@ -127,6 +133,7 @@ end
                 t = popfirst!(c.waitq)
                 @atomic :release l.locked_by = t
                 schedule(t)
+                # Leave l.reentrancy_cnt at 1
             end
             GC.enable_finalizers()
         finally
@@ -137,7 +144,5 @@ end
     end
     return
 end
-
-const Condition = Base.GenericCondition{FIFOLock}
 
 end
