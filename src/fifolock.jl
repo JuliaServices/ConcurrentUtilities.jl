@@ -89,6 +89,7 @@ end
     lock(c)
     try
         _trylock(l, ct) && return
+        GC.disable_finalizers()
         wait(c)
         # l.locked_by and l.reentrancy_cnt are set in unlock
     finally
@@ -135,10 +136,10 @@ end
                 schedule(t)
                 # Leave l.reentrancy_cnt at 1
             end
-            GC.enable_finalizers()
         finally
             unlock(c)
         end
+        GC.enable_finalizers()
     else
         l.reentrancy_cnt = n
     end
