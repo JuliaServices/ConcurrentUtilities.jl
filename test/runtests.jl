@@ -269,6 +269,54 @@ else
 end # @static if VERSION < v"1.10"
     end
 
+    @testset "SimpleFIFOLock" begin
+@static if false # VERSION < v"1.10-"
+        @warn "skipping FIFOLock tests since VERSION ($VERSION) < v\"1.10\""
+else
+        @warn "Doing SimpleFIFOLock"
+        ctr_in = Threads.Atomic{Int}(1)
+        ctr_out = Threads.Atomic{Int}(1)
+        test_tasks = Task[]
+        sizehint!(test_tasks, 16)
+        tasks_in = zeros(Int, 16)
+        tasks_out = zeros(Int, 16)
+        tot = zeros(Int, 1)
+        fl = SimpleFIFOLock()
+        lock(fl)
+        try
+            for i in 1:16
+                t = Threads.@spawn begin
+                    tasks_in[i] = Threads.atomic_add!(ctr_in, 1)
+                    @info "Locking $i"
+                    lock(fl)
+                    try
+                        tot[1] += 1
+                        tasks_out[i] = Threads.atomic_add!(ctr_out, 1)
+                    finally
+                        unlock(fl)
+                    end
+                end
+                push!(test_tasks, t)
+            end
+        finally
+            unlock(fl)
+        end
+        println("Mid SimpleFIFOLock")
+        for t in test_tasks
+            @test try
+                wait(t)
+                true
+            catch
+                false
+            end
+        end
+        @test tot[1] == 16
+        @test tasks_out == tasks_in
+        @warn "Did SimpleFIFOLock"
+end # @static if VERSION < v"1.10"
+    end
+
+
     # track all workers every created
     ALL_WORKERS = []
     ConcurrentUtilities.Workers.GLOBAL_CALLBACK_PER_WORKER[] = w -> push!(ALL_WORKERS, w)
