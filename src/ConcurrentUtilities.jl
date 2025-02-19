@@ -3,7 +3,7 @@ module ConcurrentUtilities
 import Base: AbstractLock, islocked, trylock, lock, unlock
 export Lockable, OrderedSynchronizer, reset!, ReadWriteLock, readlock, readunlock, @wkspawn,
     Workers, remote_eval, remote_fetch, Worker, terminate!, WorkerTerminatedException,
-    Pool, acquire, release, drain!, try_with_timeout, TimeoutException, FIFOLock
+    Pool, acquire, release, drain!, try_with_timeout, TimeoutException, FIFOLock, SimpleFIFOLock
 
 macro samethreadpool_spawn(expr)
     if VERSION >= v"1.9.2"
@@ -23,6 +23,7 @@ include("rwlock.jl")
 include("pools.jl")
 using .Pools
 include("fifolock.jl")
+include("simplefifolock.jl")
 
 function clear_current_task()
     current_task().storage = nothing
