@@ -1,124 +1,112 @@
 mutable struct SimpleFIFOLock <: AbstractLock
-    cond_wait::Base.ThreadSynchronizer
+    cond::Threads.Condition
     reentrancy_count::UInt # 0 iff the lock is not held
-    locked_by::Union{Task,Nothing}  # nothing iff the lock is not held
-    SimpleFIFOLock() = new(Base.ThreadSynchronizer(), 0, nothing)
+    locked_by::Union{Task,Nothing} # nothing iff the lock is not held
+    SimpleFIFOLock() = new(Threads.Condition(), 0, nothing)
 end
-
+    
 @inline function Base.trylock(l::SimpleFIFOLock)
-    GC.disable_finalizers(c)
+    GC.disable_finalizers()
     ct = current_task()
-    lock(l.cond_wait)
+    lock(l.cond)
     locked_by = l.locked_by
     if locked_by === nothing || locked_by === ct
-        l.rentrancy_count += 1
+        l.reentrancy_count += 1
         l.locked_by = ct
-        unlock(l.cond_wait)
+        unlock(l.cond)
         return true
-    end
-    unlock(l.cond_wait)
-    GC.enable_finalizers(c)
-    return false
+     end
+     unlock(l.cond)
+     GC.enable_finalizers()
+     return false
 end
 
 @inline function Base.lock(l::SimpleFIFOLock)
     GC.disable_finalizers()
     ct = current_task()
-    lock(l.cond_wait)
-    locked_by = l.locked_by
-    if locked_by === nothing || locked_by == ct
-        # We unroll the first iteration of the loop to avoid the overyhead of `try-finally`
-        # in the uncontended lock case.
-        l.reentrancy_count += 1
-        l.locked_by = ct
-        unlock(l.cond_wait)
-    else
-        try
-            while l.locked_by !== nothing && l.locked_by !== ct
-                wait(l.cond_wait)
-            end
+    lock(l.cond)
+    while true
+        if l.locked_by === nothing || l.locked_by === ct
             l.reentrancy_count += 1
             l.locked_by = ct
-        finally
-            unlock(l.cond_wait)
+            unlock(l.cond)
+            return nothing
+        end
+        # Don't pay for the try-catch unless we `wait`.
+        try
+            wait(l.cond)
+        catch
+            unlock(l.cond)
+            rethrow()
         end
     end
-    return nothing
 end
         
 @inline function Base.unlock(l::SimpleFIFOLock)
     ct = current_task()
-    lock(l.cond_wait)
-    #@info ":$(@__LINE__()) unlocking" task=current_task() locked_by=l.locked_by count=l.reentrancy_count ql=length(l.cond_wait.waitq)
-    println(@__LINE__())
-    println(@__LINE__())
+    lock(l.cond)
+    if l.locked_by === nothing
+        unlock(l.cond)
+        error("unlocking an unlocked lock")
+    end
     if l.locked_by !== ct
-        @info ":$(@__LINE__())"
+        unlock(l.cond)
         error("unlock from wrong thread")
     end
+    l.reentrancy_count += -1
     if l.reentrancy_count == 0
-        @info ":$(@__LINE__())"
-        error("unlock count must equal lock count")
-    end
-    @info ":$(@__LINE__())"
-    l.reentrancy_count -= 1
-    @info ":$(@__LINE__())"
-    @info ":$(@__LINE__()) now count is" task=current_task() count=l.reentrancy_count
-    if l.reentrancy_count == 0
-        @info "count becomes zero" task=current_task() ql=length(l.cond_wait.waitq)
         l.locked_by = nothing
-        if !isempty(l.cond_wait.waitq)
-            @info "waitq not empty"  ql=length(l.cond_wait.waitq)
-            t = popfirst!(l.cond_wait.waitq)
-            l.locked_by = t
-            l.reentrancy_count = 1
-            schedule(t)
+        if !isempty(l.cond.waitq)
+            # Don't pay for the try-catch unless we `notify`.
+            try
+                notify(l.cond; all=false)
+            catch
+                unlock(l.cond)
+                rethrow()
+            end
         end
-        GC.enable_finalizers()
     end
-    unlock(l.cond_wait)
+    unlock(l.cond)
     return nothing
 end
 
-# mutable struct FLock2 <: AbstractLock
-#     lock::ReentrantLock
-#     locked_by::Union{Task,Nothing} # nothing iff the lock is not held
-#     rentrancy_count::UInt          # 0 iff the lock is not held
-#     tasks::Vector{Task}
-#     FLock2() = new(ReentrantLock(), nothing, 0, Task[])
-# end
-
-# @inline function Base.trylock(l::SimpleFIFOLock)
-#     GC.disable_finalizers(c)
-#     ct = current_task()
-#     lock(l.lock)
-#     locked_by = l.locked_by
-#     if locked_by === nothing || locked_by === ct
-#         l.rentrancy_count += 1
-#         l.locked_by = ct
-#         unlock(l.lock)
-#         return true
-#     end
-#     unlock(l.lock)
-#     GC.enable_finalizers(c)
-#     return false
-# end
+# Performance note: for `@btime begin lock($l); unlock($l); end`.
+#   13ns for SpinLock
+#   17ns for ReentrantLock
+#   33ns for FIFOLock
+#   35ns for SimpleFIFOLock
+#   57ns for the alternative versions below that use `@lock` (and hence have too much try-finally code)
 
 # @inline function Base.lock(l::SimpleFIFOLock)
 #     GC.disable_finalizers()
 #     ct = current_task()
-#     lock(l.lock)
-#     locked_by = l.locked_by
-#     if locked_by === nothing || locked_by == ct
-#         l.reentrancy_count += 1
-#         l.locked_by = ct
-#         unlock(l.lock)
-#     else
-#         push!(l.tasks, ct)
-#         unlock(l.lock)  # Little race here since someone could sneak in and yield to me.
-#         wait()
-#         l.reentrancy_count += 1
-#         l.locked_by = ct
+#     @lock l.cond begin
+#         while true
+#             if l.locked_by === nothing || l.locked_by === ct
+#                 l.reentrancy_count += 1
+#                 l.locked_by = ct
+#                 return nothing
+#             end
+#             wait(l.cond)
+#         end
+#     end
+# end
+        
+# @inline function Base.unlock(l::SimpleFIFOLock)
+#     ct = current_task()
+#     @lock l.cond begin
+#         if l.locked_by === nothing
+#             error("unlocking an unlocked lock")
+#         end
+#         if l.locked_by !== ct
+#             error("unlock from wrong thread")
+#         end
+#         @assert l.reentrancy_count > 0
+#         l.reentrancy_count += -1
+#         if l.reentrancy_count == 0
+#             l.locked_by = nothing
+#             notify(l.cond; all=false)
+#         end
 #     end
 #     return nothing
 # end

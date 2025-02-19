@@ -287,7 +287,6 @@ else
             for i in 1:16
                 t = Threads.@spawn begin
                     tasks_in[i] = Threads.atomic_add!(ctr_in, 1)
-                    @info "Locking $i"
                     lock(fl)
                     try
                         tot[1] += 1
