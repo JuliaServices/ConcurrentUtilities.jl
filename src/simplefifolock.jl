@@ -1,3 +1,19 @@
+"""
+    SimpleFIFOLock()
+
+A reentrant lock similar to Base.ReentrantLock, but with strict FIFO ordering.
+
+This lock supports "barging", in which a thread can jump to the front of the queue of tasks:
+```
+lock(fifolock; first=true)
+```
+
+Calling `lock` inhibits running on finalizers on that thread.
+
+Implementation note: The implementation uses a Condition.  Conditions provide FIFO
+notification order, as well as the ability to jump to the front, which makes the
+implementation straightforward.
+"""
 mutable struct SimpleFIFOLock <: AbstractLock
     cond::Threads.Condition
     reentrancy_count::UInt # 0 iff the lock is not held
@@ -5,6 +21,14 @@ mutable struct SimpleFIFOLock <: AbstractLock
     SimpleFIFOLock() = new(Threads.Condition(), 0, nothing)
 end
     
+"""
+    trylock(l::SimpleFIFOLock)
+
+Try to acquire lock `l`.  If successful, return `true`.  If the lock is held by another
+task, do not wait and return `false`.
+
+Each successful `trylock` must be matched by an `unlock`.
+"""
 @inline function Base.trylock(l::SimpleFIFOLock)
     GC.disable_finalizers()
     ct = current_task()
@@ -21,7 +45,15 @@ end
      return false
 end
 
-@inline function Base.lock(l::SimpleFIFOLock)
+"""
+    lock(l::SimpleFIFOLock; first=false)
+
+Acquire lock `l`. The lock is reentrant, so if the calling task has already acquired the
+lock then return immediately.
+
+Each `lock` must be matched by an `unlock`.
+"""
+@inline function Base.lock(l::SimpleFIFOLock; first=false)
     GC.disable_finalizers()
     ct = current_task()
     lock(l.cond)
@@ -34,7 +66,7 @@ end
         end
         # Don't pay for the try-catch unless we `wait`.
         try
-            wait(l.cond)
+            wait(l.cond; first)
         catch
             unlock(l.cond)
             rethrow()
@@ -42,6 +74,14 @@ end
     end
 end
         
+"""
+    unlock(lock::SimpleFIFOLock)
+
+Releases ownerhsip of `lock`.
+
+Note if the has been more than once by the same thread, it will need to be unlocked the same
+number of times.
+"""
 @inline function Base.unlock(l::SimpleFIFOLock)
     ct = current_task()
     lock(l.cond)
