@@ -279,7 +279,7 @@ end # @static if VERSION < v"1.10"
             @show w
         end
         @test !process_running(w.process)
-        @test !isopen(w.pipe)
+        @test !isopen(w.socket)
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
@@ -292,12 +292,12 @@ end
     # @testset "@wkspawn" begin
         # basics
         @test fetch(@wkspawn(1 + 1)) == 2
-        
+
         if isdefined(Base.Threads, :maxthreadid)
             # interactive threadpool
             @test fetch(@wkspawn(:interactive, 1 + 1)) == 2
         end
-        
+
         # show incorrect behavior
         ref = Ref(10)
         ansref = Ref(0)
@@ -313,7 +313,7 @@ end
         # there should be no program references to ref, and 3 GC calls
         # should have collected it, but it's still alive
         @test wkref.value.x == 10
-        
+
         # and now with @wkspawn
         ref = Ref(10)
         ansref = Ref(0)

@@ -7,7 +7,7 @@ using Test, IOCapture
     @testset "correct connected/running states ($w)" begin
         @test w.pid > 0
         @test process_running(w.process)
-        @test isopen(w.pipe)
+        @test isopen(w.socket)
         @test !Workers.terminated(w)
         if !(istaskstarted(w.messages) && !istaskdone(w.messages))
             @show w.messages
@@ -22,7 +22,7 @@ using Test, IOCapture
     @testset "clean shutdown ($w)" begin
         close(w)
         @test !process_running(w.process)
-        @test !isopen(w.pipe)
+        @test !isopen(w.socket)
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
@@ -35,7 +35,7 @@ using Test, IOCapture
         terminate!(w)
         wait(w)
         @test !process_running(w.process)
-        @test !isopen(w.pipe)
+        @test !isopen(w.socket)
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
@@ -80,7 +80,7 @@ using Test, IOCapture
         @test_throws Workers.WorkerTerminatedException fetch(fut)
         wait(w)
         @test !process_running(w.process)
-        @test !isopen(w.pipe)
+        @test !isopen(w.socket)
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)

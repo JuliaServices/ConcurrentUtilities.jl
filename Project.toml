@@ -1,16 +1,16 @@
 name = "ConcurrentUtilities"
 uuid = "f0e56b4a-5159-44fe-b623-3e5288b988bb"
 authors = ["Jacob Quinn <quinn.jacobd@gmail.com>"]
-version = "2.5.0"
+version = "2.6.0"
 
 [deps]
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 
 [compat]
-Serialization = "1.6"
-Sockets = "1.6"
-julia = "1.6"
+Serialization = "1.10"
+Sockets = "1.10"
+julia = "1.10"
 
 [extras]
 IOCapture = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
