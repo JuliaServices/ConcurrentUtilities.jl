@@ -11,7 +11,7 @@ while the write side is acquired/released via `lock(rw)` and `unlock(rw)`.
 While a writer is active, all readers will block. Once the writer is finished,
 all pending readers will be allowed to acquire/release before the next writer.
 """
-mutable struct ReadWriteLock
+mutable struct ReadWriteLock <: Base.AbstractLock
     writelock::ReentrantLock
     readwait::Threads.Condition
     writeready::Threads.Event
