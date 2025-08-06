@@ -95,6 +95,23 @@ function Base.lock(rw::ReadWriteLock)
     return
 end
 
+function Base.trylock(rw::ReadWriteLock)
+    success = trylock(rw.writelock)
+    success || return false
+
+    r = (@atomic :acquire_release rw.readercount -= MaxReaders) + MaxReaders
+    if r != 0
+        r = (@atomic :acquire_release rw.readercount += MaxReaders)
+        if r > 0
+            # wake up waiting readers
+            Base.@lock rw.readwait notify(rw.readwait)
+        end
+        unlock(rw.writelock)
+        return false
+    end
+    return true
+end
+
 Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
 
 function Base.unlock(rw::ReadWriteLock)
