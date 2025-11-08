@@ -16,8 +16,8 @@ A synchronizer's state can be reset to a specific value (1 by default)
 by calling `reset!(x, i)`.
 """
 mutable struct OrderedSynchronizer
-    coordinating_task::Task
-    cond::Threads.Condition
+    lock::ReentrantLock
+    waiting_closures::Dict{Int, Any} # access guarded by lock
     i::Int
 @static if VERSION < v"1.7"
     closed::Threads.Atomic{Bool}
