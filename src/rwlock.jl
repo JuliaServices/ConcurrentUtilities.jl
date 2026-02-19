@@ -11,7 +11,7 @@ while the write side is acquired/released via `lock(rw)` and `unlock(rw)`.
 While a writer is active, all readers will block. Once the writer is finished,
 all pending readers will be allowed to acquire/release before the next writer.
 """
-mutable struct ReadWriteLock
+mutable struct ReadWriteLock <: Base.AbstractLock
     writelock::ReentrantLock
     readwait::Threads.Condition
     writeready::Threads.Event
@@ -93,6 +93,23 @@ function Base.lock(rw::ReadWriteLock)
         wait(rw.writeready)
     end
     return
+end
+
+function Base.trylock(rw::ReadWriteLock)
+    success = trylock(rw.writelock)
+    success || return false
+
+    r = (@atomic :acquire_release rw.readercount -= MaxReaders) + MaxReaders
+    if r != 0
+        r = (@atomic :acquire_release rw.readercount += MaxReaders)
+        if r > 0
+            # wake up waiting readers
+            Base.@lock rw.readwait notify(rw.readwait)
+        end
+        unlock(rw.writelock)
+        return false
+    end
+    return true
 end
 
 Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
