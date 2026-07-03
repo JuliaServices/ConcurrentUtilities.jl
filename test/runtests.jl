@@ -353,9 +353,10 @@ end
         wait(t)
         @test ansref[] == 10
         t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
-        # there should be no program references to ref, and 3 GC calls
-        # should have collected it, but it's still alive
-        @test wkref.value.x == 10
+        # Older Julia versions can retain this captured value; newer Julia
+        # versions may collect it. `@wkspawn` below should collect it either way.
+        base_spawn_value = wkref.value
+        @test base_spawn_value === nothing || base_spawn_value.x == 10
         
         # and now with @wkspawn
         ref = Ref(10)
