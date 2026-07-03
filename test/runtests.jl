@@ -111,6 +111,36 @@ using Test, ConcurrentUtilities
         @warn "skipping ReadWriteLock tests since VERSION ($VERSION) < v\"1.8\""
 else
         rw = ReadWriteLock()
+        read_result = readlock(rw) do
+            @test (@atomic rw.readercount) == 1
+            :read
+        end
+        @test read_result === :read
+        @test (@atomic rw.readercount) == 0
+
+        write_result = lock(rw) do
+            @test islocked(rw)
+            :write
+        end
+        @test write_result === :write
+        @test !islocked(rw)
+        @test (@atomic rw.readercount) == 0
+
+        @test_throws ErrorException begin
+            readlock(rw) do
+                error("read scope failed")
+            end
+        end
+        @test (@atomic rw.readercount) == 0
+
+        @test_throws ErrorException begin
+            lock(rw) do
+                error("write scope failed")
+            end
+        end
+        @test !islocked(rw)
+        @test (@atomic rw.readercount) == 0
+
         println("test read is blocked while writing")
         lock(rw)
         c = Channel()
@@ -230,19 +260,29 @@ end # @static if VERSION < v"1.8"
 @static if VERSION < v"1.10-"
         @warn "skipping FIFOLock tests since VERSION ($VERSION) < v\"1.10\""
 else
-        ctr_in = Threads.Atomic{Int}(1)
         ctr_out = Threads.Atomic{Int}(1)
         test_tasks = Task[]
         sizehint!(test_tasks, 16)
-        tasks_in = zeros(Int, 16)
         tasks_out = zeros(Int, 16)
         tot = zeros(Int, 1)
         fl = FIFOLock()
+        waiters = let fl = fl
+            function ()
+                c = fl.cond_wait
+                lock(c)
+                try
+                    return length(c.waitq)
+                finally
+                    unlock(c)
+                end
+            end
+        end
         lock(fl)
         try
             for i in 1:16
+                # Queue each task before starting the next one so the FIFO
+                # assertion tracks lock wait order, not scheduler timing.
                 t = Threads.@spawn begin
-                    tasks_in[i] = Threads.atomic_add!(ctr_in, 1)
                     lock(fl)
                     try
                         tot[1] += 1
@@ -252,6 +292,9 @@ else
                     end
                 end
                 push!(test_tasks, t)
+                while waiters() < i
+                    yield()
+                end
             end
         finally
             unlock(fl)
@@ -265,7 +308,7 @@ else
             end
         end
         @test tot[1] == 16
-        @test tasks_out == tasks_in
+        @test tasks_out == 1:16
 end # @static if VERSION < v"1.10"
     end
 
