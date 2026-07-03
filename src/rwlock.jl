@@ -7,6 +7,8 @@ A threadsafe lock that allows multiple readers or a single writer.
 
 The read side is acquired/released via `readlock(rw)` and `readunlock(rw)`,
 while the write side is acquired/released via `lock(rw)` and `unlock(rw)`.
+Use `readlock(rw) do ... end` or `lock(rw) do ... end` to scope lock
+ownership to a function call.
 
 While a writer is active, all readers will block. Once the writer is finished,
 all pending readers will be allowed to acquire/release before the next writer.
@@ -52,6 +54,21 @@ function readlock(rw::ReadWriteLock)
     return
 end
 
+"""
+    readlock(f, rw::ReadWriteLock)
+
+Acquire the read side of `rw`, execute `f`, and release the read side when `f`
+returns or throws.
+"""
+function readlock(f, rw::ReadWriteLock)
+    readlock(rw)
+    try
+        return f()
+    finally
+        readunlock(rw)
+    end
+end
+
 function readunlock(rw::ReadWriteLock)
     # similar to `readlock`, the first step is to decrement `readercount` atomically
     if (@atomic :acquire_release rw.readercount -= 1) < 0
@@ -93,6 +110,21 @@ function Base.lock(rw::ReadWriteLock)
         wait(rw.writeready)
     end
     return
+end
+
+"""
+    lock(f, rw::ReadWriteLock)
+
+Acquire the write side of `rw`, execute `f`, and release the write side when
+`f` returns or throws.
+"""
+function Base.lock(f, rw::ReadWriteLock)
+    lock(rw)
+    try
+        return f()
+    finally
+        unlock(rw)
+    end
 end
 
 Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
