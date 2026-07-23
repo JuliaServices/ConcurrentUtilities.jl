@@ -60,7 +60,11 @@ function init(nworkers=Threads.nthreads()-1)
             WORKER_TASKS[tid == 1 ? 1 : (tid - 1)] = Base.@async begin
                 for task in WORK_QUEUE
                     schedule(task)
-                    wait(task)
+                    try
+                        wait(task)
+                    catch e
+                        e isa TaskFailedException || rethrow()
+                    end
                 end
             end
         end
@@ -71,7 +75,11 @@ else
             WORKER_TASKS[tid == 1 ? 1 : (tid - 1)] = Base.@async begin
                 for task in WORK_QUEUE
                     schedule(task)
-                    wait(task)
+                    try
+                        wait(task)
+                    catch e
+                        e isa TaskFailedException || rethrow()
+                    end
                 end
             end
         end

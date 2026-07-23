@@ -26,6 +26,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
 
@@ -39,6 +41,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
 
@@ -84,6 +88,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
         close(w)
     end
@@ -96,6 +102,21 @@ using Test, IOCapture
         fut = remote_eval(w, :(using Test; @test 1 == 1))
         @test fetch(fut) isa Test.Pass
         close(w)
+    end
+end
+
+@testset "Worker connection failure cleanup" begin
+    if Sys.isunix()
+        mktempdir() do dir
+            withenv("TMPDIR" => dir) do
+                @test_throws ConcurrentUtilities.TimeoutException Worker(
+                    exeflags=`--version`,
+                    connect_timeout=1,
+                    worker_redirect_io=devnull,
+                )
+                @test isempty(readdir(dir))
+            end
+        end
     end
 end
 

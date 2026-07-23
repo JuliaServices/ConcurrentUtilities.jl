@@ -47,9 +47,11 @@ the variable's value in the current task.
 macro wkspawn(args...)
     e = args[end]
     expr = quote
-        ret = $e
-        $(clear_current_task)()
-        ret
+        try
+            $e
+        finally
+            $(clear_current_task)()
+        end
     end
 @static if isdefined(Base.Threads, :maxthreadid)
     q = esc(:(Threads.@spawn $(args[1:end-1]...) $expr))

@@ -85,6 +85,7 @@ function terminate!(w::Worker, from::Symbol=:manual)
         # we won getting to close down the worker
         @debug "terminating worker $(w.pid) from $from"
         wte = WorkerTerminatedException(w)
+        close(w.workqueue, wte)
         Base.@lock w.lock begin
             for (_, fut) in w.futures
                 close(fut.value, wte)
@@ -128,7 +129,8 @@ function Base.close(w::Worker)
 end
 
 # wait until our spawned tasks have all finished
-Base.wait(w::Worker) = fetch(w.process_watch) && fetch(w.messages) && fetch(w.output)
+Base.wait(w::Worker) =
+    fetch(w.process_watch) && fetch(w.messages) && fetch(w.output) && fetch(w.worksubmission)
 
 Base.show(io::IO, w::Worker) = print(io, "Worker(pid=$(w.pid)", terminated(w) ? ", terminated=true, termsignal=$(w.process.termsignal)" : "", ")")
 
@@ -205,8 +207,12 @@ end
     catch
         # cleanup in case connect fails/times out
         kill(proc, Base.SIGKILL)
-        @isdefined(sock) && close(sock)
-        @isdefined(w) && terminate!(w, :Worker_catch)
+        if @isdefined(w)
+            terminate!(w, :Worker_catch)
+        else
+            @isdefined(pipe) && close(pipe)
+            close(server)
+        end
         rethrow()
     end
 end
@@ -261,16 +267,23 @@ function process_work(w::Worker)
     try
         for (req, fut) in w.workqueue
             # println("Sending request $(req) to worker $(w.pid)")
-            Base.@lock w.lock begin
-                w.futures[req.id] = fut
+            submitted = Base.@lock w.lock begin
+                if terminated(w)
+                    close(fut.value, WorkerTerminatedException(w))
+                    false
+                else
+                    w.futures[req.id] = fut
+                    true
+                end
             end
-            serialize(w.pipe, req)
+            submitted && serialize(w.pipe, req)
         end
     catch e
         # @error "Error processing work for worker $(w.pid)" exception=(e, catch_backtrace())
         terminate!(w, :process_work)
         # e isa EOFError || e isa Base.IOError || rethrow()
     end
+    true
 end
 
 remote_eval(w::Worker, expr) = remote_eval(w, Main, expr.head == :block ? Expr(:toplevel, expr.args...) : expr)

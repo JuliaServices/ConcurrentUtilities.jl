@@ -9,6 +9,10 @@ using Test, ConcurrentUtilities
         @show Threads.nthreads(), threadid
         @test Threads.nthreads() == 1 ? (threadid == 1) : (threadid != 1)
         @test ConcurrentUtilities.@spawn(false, 1 + 1).storage === nothing
+        failed = ConcurrentUtilities.@spawn error("expected failure")
+        @test_throws TaskFailedException wait(failed)
+        @test all(t -> !istaskdone(t), ConcurrentUtilities.WORKER_TASKS)
+        @test fetch(ConcurrentUtilities.@spawn(1 + 1)) == 2
 
     end # @testset "ConcurrentUtilities.@spawn"
 
@@ -314,6 +318,35 @@ else
         put!(wc2, nothing)
         @test fetch(t2)
         @test !islocked(rw)
+
+        # A reader released by one writer must not wait behind the next writer,
+        # since the next writer includes that reader in readerwait.
+        rw = ReadWriteLock()
+        lock(rw)
+        lock(rw.readwait)
+        delayed_reader = @async begin
+            readlock(rw)
+            readunlock(rw)
+            true
+        end
+        while (@atomic rw.readercount) != -ConcurrentUtilities.MaxReaders + 1
+            yield()
+        end
+        unlock(rw)
+        next_writer = @async begin
+            lock(rw)
+            unlock(rw)
+            true
+        end
+        while (@atomic rw.readerwait) != 1
+            yield()
+        end
+        unlock(rw.readwait)
+        @test fetch(delayed_reader)
+        @test fetch(next_writer)
+        @test (@atomic rw.readercount) == 0
+        @test (@atomic rw.readerwait) == 0
+        @test !islocked(rw)
 end # @static if VERSION < v"1.8"
     end
 
@@ -327,6 +360,13 @@ else
         tasks_out = zeros(Int, 16)
         tot = zeros(Int, 1)
         fl = FIFOLock()
+        c = Base.GenericCondition{FIFOLock}(fl)
+        lock(c)
+        try
+            @test notify(c) == 0
+        finally
+            unlock(c)
+        end
         waiters = let fl = fl
             function ()
                 c = fl.cond_wait
@@ -387,6 +427,8 @@ end # @static if VERSION < v"1.10"
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
     include("pools.jl")
@@ -433,6 +475,21 @@ end
         t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
         @show wkref
         # correctly GCed
+        @test wkref.value === nothing
+
+        # captures are also cleared when the spawned expression fails
+        ref = Ref(10)
+        wkref = WeakRef(ref)
+        t = let ref=ref
+            @wkspawn begin
+                $ref[]
+                error("expected failure")
+            end
+        end
+        @test_throws TaskFailedException wait(t)
+        @test t.code === nothing
+        ref = nothing
+        GC.gc(true); GC.gc(true); GC.gc(true)
         @test wkref.value === nothing
 #     end
 

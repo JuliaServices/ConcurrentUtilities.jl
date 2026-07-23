@@ -24,32 +24,48 @@ mutable struct ReadWriteLock <: Base.AbstractLock
     # `readercount + MaxReaders` is the number of active or pending readers
     @atomic readercount::Int
     @atomic readerwait::Int
+    @atomic readerepoch::UInt
 end
 
 function ReadWriteLock()
 @static if VERSION < v"1.8"
     throw(ArgumentError("ReadWriteLock requires Julia v1.8 or greater"))
 else
-    return ReadWriteLock(ReentrantLock(), Threads.Condition(), Threads.Event(true), 0, 0)
+    return ReadWriteLock(ReentrantLock(), Threads.Condition(), Threads.Event(true), 0, 0, 0)
 end
 end
 
 const MaxReaders = 1 << 30
 
 function readlock(rw::ReadWriteLock)
+    epoch = @atomic :acquire rw.readerepoch
     # first step is to increment readercount atomically
     if (@atomic :acquire_release rw.readercount += 1) < 0
         # if we observe from our atomic operation that readercount is < 0,
         # a writer was active or pending, so we need initiate the "slowpath"
         # by acquiring the readwait lock
-        Base.@lock rw.readwait begin
-            # check our condition again, if it holds, then we get in line
-            # to be notified once the writer is done (the writer also acquires
-            # the readwait lock, so we'll be waiting until it releases it)
-            if rw.readercount < 0
-                # writer still active
-                wait(rw.readwait)
+        try
+            Base.@lock rw.readwait begin
+                # A later writer can make readercount negative again before a
+                # reader notified by the current writer resumes. The epoch
+                # identifies which writer this reader is waiting behind.
+                while (@atomic :acquire rw.readerepoch) == epoch
+                    wait(rw.readwait)
+                end
             end
+        catch
+            Base.@lock rw.readwait begin
+                if (@atomic :acquire rw.readerepoch) == epoch
+                    # This reader was never released by its writer and was not
+                    # included in that writer's readerwait count.
+                    @atomic :acquire_release rw.readercount -= 1
+                else
+                    # The reader was released, so a later writer may already
+                    # be counting it as an active reader.
+                    readunlock(rw)
+                end
+            end
+            rethrow()
         end
     end
     return
@@ -154,7 +170,10 @@ function Base.unlock(rw::ReadWriteLock)
     r = (@atomic :acquire_release rw.readercount += MaxReaders)
     if r > 0
         # wake up waiting readers
-        Base.@lock rw.readwait notify(rw.readwait)
+        Base.@lock rw.readwait begin
+            @atomic :release rw.readerepoch += 1
+            notify(rw.readwait)
+        end
     end
     unlock(rw.writelock)
     return

@@ -23,7 +23,7 @@ mutable struct FIFOLock <: AbstractLock
     FIFOLock() = new(nothing, 0x0000_0000, 0x00, Base.ThreadSynchronizer())
 end
 
-assert_havelock(l::FIFOLock) = assert_havelock(l, l.locked_by)
+Base.assert_havelock(l::FIFOLock) = Base.assert_havelock(l, l.locked_by)
 islocked(l::FIFOLock) = (@atomic :monotonic l.havelock) & LOCKED_BIT != 0
 
 # Correctness reasoning:
