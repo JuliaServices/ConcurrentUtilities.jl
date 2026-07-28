@@ -111,6 +111,68 @@ using Test, ConcurrentUtilities
         @warn "skipping ReadWriteLock tests since VERSION ($VERSION) < v\"1.8\""
 else
         rw = ReadWriteLock()
+        @test rw isa Base.AbstractLock
+
+        @test trylock(rw)
+        @test islocked(rw)
+        unlock(rw)
+        @test !islocked(rw)
+
+        readlock(rw)
+        @test islocked(rw)
+        @test !trylock(rw)
+        @test trylock(() -> error("unreachable"), rw) === false
+        @test (@atomic rw.readercount) == 1
+        @test (@atomic rw.readerwait) == 0
+        readunlock(rw)
+        @test !islocked(rw)
+
+        try_result = trylock(rw) do
+            @test islocked(rw)
+            :write
+        end
+        @test try_result === :write
+        @test !islocked(rw)
+
+        lock(rw)
+        @test !trylock(rw)
+        @test islocked(rw)
+        unlock(rw)
+        @test !islocked(rw)
+        @test (@atomic rw.readercount) == 0
+        @test (@atomic rw.readerwait) == 0
+
+        if Threads.nthreads() > 1
+            observed_writer_state = Threads.Atomic{Bool}(false)
+            stop_observing = Threads.Atomic{Bool}(false)
+            reader_started = Channel(1)
+            reader = Threads.@spawn begin
+                readlock(rw)
+                put!(reader_started, nothing)
+                while !stop_observing[]
+                    if (@atomic :acquire rw.readercount) < 0
+                        observed_writer_state[] = true
+                    end
+                end
+                readunlock(rw)
+            end
+            take!(reader_started)
+            all_failed = all(!trylock(rw) for _ in 1:100_000)
+            stop_observing[] = true
+            wait(reader)
+            @test all_failed
+            @test !observed_writer_state[]
+            @test (@atomic rw.readerwait) == 0
+        end
+
+        if isdefined(Base, :Lockable)
+            lockable = Base.Lockable(Ref(1), rw)
+            lock(lockable) do value
+                value[] += 1
+            end
+            @test lockable.value[] == 2
+        end
+
         read_result = readlock(rw) do
             @test (@atomic rw.readercount) == 1
             :read
@@ -178,8 +240,7 @@ else
 
         println("test new reads blocked on pending write, and vice versa")
         readlock(rw)
-        # readlock doesn't count as "locked"
-        @test !islocked(rw)
+        @test islocked(rw)
         # start another reader
         secondReaderLocked = Ref(false)
         c = Channel()
