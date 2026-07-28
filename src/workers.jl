@@ -162,11 +162,19 @@ function Worker(;
         env["JULIA_PROJECT"] = project
     end
     # end copied from Distributed.launch
+    # Ensure the subprocess can find ConcurrentUtilities via the package system.
+    # The parent project may only have it as a transitive dep, so we add the
+    # ConcurrentUtilities project dir to the load path.
+    cu_project_dir = dirname(@__DIR__)
+    lp = get(env, "JULIA_LOAD_PATH", "")
+    if !occursin(cu_project_dir, lp)
+        env["JULIA_LOAD_PATH"] = cu_project_dir * pathsep * lp
+    end
     ## start the worker process
     file = tempname()
     server = Sockets.listen(file)
     color = get(worker_redirect_io, :color, false) ? "yes" : "no" # respect color of target io
-    exec = "include(\"$(@__DIR__)/ConcurrentUtilities.jl\"); using ConcurrentUtilities: Workers; Workers.startworker(\"$file\")"
+    exec = "using ConcurrentUtilities: Workers; Workers.startworker(\"$file\")"
     cmd = `$(Base.julia_cmd()) $exeflags --startup-file=no --color=$color -e $exec`
     proc = open(detach(setenv(addenv(cmd, env), dir=dir)), "r+")
     pid = Libc.getpid(proc)

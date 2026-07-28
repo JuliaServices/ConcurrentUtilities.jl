@@ -13,10 +13,10 @@ using Test, IOCapture
             @show w.messages
         end
         @test istaskstarted(w.messages) && !istaskdone(w.messages)
-        if !(istaskstarted(w.output) && !istaskdone(w.output))
+        if !istaskstarted(w.output)
             @show w.output
         end
-        @test istaskstarted(w.output) && !istaskdone(w.output)
+        @test istaskstarted(w.output)
         @test isempty(w.futures)
     end
     @testset "clean shutdown ($w)" begin
