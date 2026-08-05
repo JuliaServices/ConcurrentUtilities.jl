@@ -367,12 +367,12 @@ else
         finally
             unlock(c)
         end
-        waiters = let fl = fl
+        waitq_tail = let fl = fl
             function ()
                 c = fl.cond_wait
                 lock(c)
                 try
-                    return length(c.waitq)
+                    return c.waitq.tail
                 finally
                     unlock(c)
                 end
@@ -380,6 +380,7 @@ else
         end
         lock(fl)
         try
+            tail = waitq_tail()
             for i in 1:16
                 # Queue each task before starting the next one so the FIFO
                 # assertion tracks lock wait order, not scheduler timing.
@@ -393,9 +394,10 @@ else
                     end
                 end
                 push!(test_tasks, t)
-                while waiters() < i
+                while waitq_tail() === tail
                     yield()
                 end
+                tail = waitq_tail()
             end
         finally
             unlock(fl)
@@ -410,6 +412,25 @@ else
         end
         @test tot[1] == 16
         @test tasks_out == 1:16
+
+@static if isdefined(Base, :CancellationTokenSource)
+        fl = FIFOLock()
+        lock(fl)
+        source = Base.CancellationTokenSource()
+        cancelled = Base.ScopedValues.with(
+            () -> Threads.@spawn(lock(fl)),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while isempty(fl.cond_wait)
+            yield()
+        end
+        Base.cancel!(source)
+        @test timedwait(() -> istaskdone(cancelled), 5) == :ok
+        @test_throws TaskFailedException wait(cancelled)
+        unlock(fl)
+        @test lock(() -> true, fl)
+        @test !islocked(fl)
+end
 end # @static if VERSION < v"1.10"
     end
 

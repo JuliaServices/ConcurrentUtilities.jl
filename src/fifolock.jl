@@ -37,11 +37,10 @@ islocked(l::FIFOLock) = (@atomic :monotonic l.havelock) & LOCKED_BIT != 0
 # safely wait on `cond_wait`.
 #
 # FIFO ordering is ensured in `unlock`, which first acquires
-# the `cond_wait` lock. If `cond_wait`'s wait queue is empty,
-# the lock is released. Otherwise, we pop the first task in
-# the wait queue, transfer ownership to it, schedule it, and
-# return. Thus when one or more tasks are waiting,`havelock`
-# is never reset.
+# the `cond_wait` lock. If `cond_wait` has a waiter, we notify
+# the first one and leave `havelock` set. The notified task then
+# takes ownership before returning from `lock`. Thus when one or
+# more tasks are waiting, `havelock` is never reset.
 
 """
     trylock(l::FIFOLock)
@@ -91,7 +90,9 @@ end
         _trylock(l, ct) && return
         GC.disable_finalizers()
         wait(c)
-        # l.locked_by and l.reentrancy_cnt are set in unlock
+        # unlock leaves havelock set while handing the lock to us.
+        l.reentrancy_cnt = 0x0000_0001
+        @atomic :release l.locked_by = ct
     finally
         unlock(c)
     end
@@ -126,15 +127,10 @@ end
     if n == 0x0000_0000
         lock(c)
         try
-            if isempty(c.waitq)
+            @atomic :release l.locked_by = nothing
+            if notify(c; all=false) == 0
                 l.reentrancy_cnt = n
-                @atomic :release l.locked_by = nothing
                 @atomic :release l.havelock = 0x00
-            else
-                t = popfirst!(c.waitq)
-                @atomic :release l.locked_by = t
-                schedule(t)
-                # Leave l.reentrancy_cnt at 1
             end
         finally
             unlock(c)
