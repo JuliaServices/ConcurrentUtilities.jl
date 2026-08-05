@@ -24,7 +24,9 @@ mutable struct ReadWriteLock <: Base.AbstractLock
     # `readercount + MaxReaders` is the number of active or pending readers
     @atomic readercount::Int
     @atomic readerwait::Int
-    @atomic readerepoch::UInt
+    # number of pending readers released by a writer's unlock that have not
+    # resumed yet; guarded by the lock of `readwait`
+    readerrelease::Int
 end
 
 function ReadWriteLock()
@@ -38,7 +40,6 @@ end
 const MaxReaders = 1 << 30
 
 function readlock(rw::ReadWriteLock)
-    epoch = @atomic :acquire rw.readerepoch
     # first step is to increment readercount atomically
     if (@atomic :acquire_release rw.readercount += 1) < 0
         # if we observe from our atomic operation that readercount is < 0,
@@ -46,23 +47,36 @@ function readlock(rw::ReadWriteLock)
         # by acquiring the readwait lock
         try
             Base.@lock rw.readwait begin
-                # A later writer can make readercount negative again before a
-                # reader notified by the current writer resumes. The epoch
-                # identifies which writer this reader is waiting behind.
-                while (@atomic :acquire rw.readerepoch) == epoch
+                # An unlocking writer mints one release permit per pending
+                # reader it releases (`readerrelease`); each pending reader
+                # consumes exactly one permit before acquiring the read side.
+                # Permits are fungible: one minted for a slow-to-resume reader
+                # may be consumed by another pending reader, which then stands
+                # in for it in the next writer's `readerwait` count. Counting
+                # permits (rather than re-checking `readercount`, which a
+                # later writer can make negative again) ensures a reader can
+                # neither deadlock behind a writer that already counted it as
+                # active nor slip past a writer that did not release it.
+                while rw.readerrelease == 0
                     wait(rw.readwait)
                 end
+                rw.readerrelease -= 1
             end
         catch
             Base.@lock rw.readwait begin
-                if (@atomic :acquire rw.readerepoch) == epoch
-                    # This reader was never released by its writer and was not
-                    # included in that writer's readerwait count.
-                    @atomic :acquire_release rw.readercount -= 1
-                else
-                    # The reader was released, so a later writer may already
-                    # be counting it as an active reader.
+                if rw.readerrelease > 0
+                    # A writer's unlock already released a pending reader:
+                    # consume one permit as if we briefly held the read side,
+                    # and release it. If the permit was minted for another
+                    # reader, that reader is simply released by a later
+                    # writer's unlock instead (which still counts it).
+                    rw.readerrelease -= 1
                     readunlock(rw)
+                else
+                    # No writer has released us: withdraw our pending reader
+                    # registration. Permits are minted under the readwait lock
+                    # we hold, so no unlocking writer can count us concurrently.
+                    @atomic :acquire_release rw.readercount -= 1
                 end
             end
             rethrow()
@@ -167,11 +181,14 @@ function Base.islocked(rw::ReadWriteLock)
 end
 
 function Base.unlock(rw::ReadWriteLock)
-    r = (@atomic :acquire_release rw.readercount += MaxReaders)
-    if r > 0
-        # wake up waiting readers
-        Base.@lock rw.readwait begin
-            @atomic :release rw.readerepoch += 1
+    # flip the `readercount` sign back under the readwait lock, so that permit
+    # minting is atomic with respect to a cancelled reader withdrawing its
+    # registration (see the catch block in `readlock`)
+    Base.@lock rw.readwait begin
+        r = (@atomic :acquire_release rw.readercount += MaxReaders)
+        if r > 0
+            # mint one release permit per pending reader and wake them up
+            rw.readerrelease += r
             notify(rw.readwait)
         end
     end
