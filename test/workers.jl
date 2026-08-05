@@ -120,6 +120,43 @@ end
     end
 end
 
+@testset "stale response after terminate! does not kill message loop" begin
+    w = Worker(worker_redirect_io=devnull)
+    fut = remote_eval(w, :(sleep(0.2); 1 + 1))
+    while Base.@lock(w.lock, isempty(w.futures))
+        yield()
+    end
+    lock(w.lock)
+    # while we hold the coordinator lock, the worker's response arrives and
+    # the messages task blocks behind us before it can look up the future
+    sleep(1)
+    # simulate a concurrent terminate! winning the race to the futures table
+    wte = WorkerTerminatedException(w)
+    for (_, f) in w.futures
+        close(f.value, wte)
+    end
+    empty!(w.futures)
+@static if VERSION < v"1.7"
+    w.terminated[] = true
+else
+    @atomic w.terminated = true
+end
+    unlock(w.lock)
+    @test_throws WorkerTerminatedException fetch(fut)
+    # finish what terminate! would have done, then wait for a clean shutdown;
+    # the stale response must be dropped rather than kill the messages task
+    close(w.workqueue, wte)
+    kill(w.process, Base.SIGKILL)
+    while !process_exited(w.process)
+        sleep(0.1)
+    end
+    close(w.pipe)
+    close(w.server)
+    @test wait(w)
+    @test istaskstarted(w.messages) && istaskdone(w.messages)
+    @test isempty(w.futures)
+end
+
 @testset "Workers print in color" begin
     project_path = pkgdir(ConcurrentUtilities)
     code = """

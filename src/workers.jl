@@ -244,14 +244,20 @@ function process_responses(w::Worker)
             @assert r isa Response "Received invalid response from worker $(w.pid): $(r)"
             # println("Received response $(r) from worker $(w.pid)")
             Base.@lock lock begin
-                # look up the FutureResult for this request
-                fut = pop!(reqs, r.id)
-                @assert !isready(fut.value) "Received duplicate response for request $(r.id) from worker $(w.pid)"
-                if r.error !== nothing
-                    # this allows rethrowing the exception from the worker to the caller
-                    close(fut.value, r.error)
+                # look up the FutureResult for this request; a concurrent
+                # terminate! may have already closed and removed it, in which
+                # case the response is stale and dropped
+                fut = pop!(reqs, r.id, nothing)
+                if fut === nothing
+                    terminated(w) || error("Received response for unknown request $(r.id) from worker $(w.pid)")
                 else
-                    put!(fut.value, r.result)
+                    @assert !isready(fut.value) "Received duplicate response for request $(r.id) from worker $(w.pid)"
+                    if r.error !== nothing
+                        # this allows rethrowing the exception from the worker to the caller
+                        close(fut.value, r.error)
+                    else
+                        put!(fut.value, r.result)
+                    end
                 end
             end
         end
