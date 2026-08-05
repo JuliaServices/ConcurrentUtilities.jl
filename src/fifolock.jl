@@ -89,7 +89,15 @@ end
     try
         _trylock(l, ct) && return
         GC.disable_finalizers()
-        wait(c)
+        try
+            wait(c)
+        catch
+            # cancelled/interrupted before the lock was handed to us; unlock
+            # skips wait entries whose wake was already claimed, so it will
+            # never count us as the new owner
+            GC.enable_finalizers()
+            rethrow()
+        end
         # unlock leaves havelock set while handing the lock to us.
         l.reentrancy_cnt = 0x0000_0001
         @atomic :release l.locked_by = ct

@@ -562,6 +562,31 @@ else
         unlock(fl)
         @test lock(() -> true, fl)
         @test !islocked(fl)
+
+        # a task that catches the cancellation and keeps running must not be
+        # left with finalizers disabled
+        lock(fl)
+        source = Base.CancellationTokenSource()
+        survivor = Base.ScopedValues.with(
+            () -> Threads.@spawn(begin
+                try
+                    lock(fl)
+                    false
+                catch
+                    ccall(:jl_gc_get_finalizers_inhibited, Cint, (Ptr{Cvoid},), C_NULL) == 0
+                end
+            end),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while isempty(fl.cond_wait)
+            yield()
+        end
+        Base.cancel!(source)
+        @test timedwait(() -> istaskdone(survivor), 5) == :ok
+        @test fetch(survivor)
+        unlock(fl)
+        @test lock(() -> true, fl)
+        @test !islocked(fl)
 end
 end # @static if VERSION < v"1.10"
     end
