@@ -6,14 +6,15 @@
 A threadsafe lock that allows multiple readers or a single writer.
 
 The read side is acquired/released via `readlock(rw)` and `readunlock(rw)`,
-while the write side is acquired/released via `lock(rw)` and `unlock(rw)`.
+while the write side is acquired/released via `lock(rw)`, `trylock(rw)`, and
+`unlock(rw)`.
 Use `readlock(rw) do ... end` or `lock(rw) do ... end` to scope lock
 ownership to a function call.
 
 While a writer is active, all readers will block. Once the writer is finished,
 all pending readers will be allowed to acquire/release before the next writer.
 """
-mutable struct ReadWriteLock
+mutable struct ReadWriteLock <: Base.AbstractLock
     writelock::ReentrantLock
     readwait::Threads.Condition
     writeready::Threads.Event
@@ -113,6 +114,19 @@ function Base.lock(rw::ReadWriteLock)
 end
 
 """
+    trylock(rw::ReadWriteLock)
+
+Attempt to acquire the write side of `rw` without blocking. Return `true` on
+success and `false` if either the read or write side is already held.
+"""
+function Base.trylock(rw::ReadWriteLock)
+    trylock(rw.writelock) || return false
+    result = @atomicreplace :acquire_release :acquire rw.readercount 0 => -MaxReaders
+    result.success || unlock(rw.writelock)
+    return result.success
+end
+
+"""
     lock(f, rw::ReadWriteLock)
 
 Acquire the write side of `rw`, execute `f`, and release the write side when
@@ -127,7 +141,14 @@ function Base.lock(f, rw::ReadWriteLock)
     end
 end
 
-Base.islocked(rw::ReadWriteLock) = islocked(rw.writelock)
+"""
+    islocked(rw::ReadWriteLock)
+
+Return `true` if either the read or write side of `rw` is held.
+"""
+function Base.islocked(rw::ReadWriteLock)
+    return islocked(rw.writelock) || (@atomic :monotonic rw.readercount) != 0
+end
 
 function Base.unlock(rw::ReadWriteLock)
     r = (@atomic :acquire_release rw.readercount += MaxReaders)
