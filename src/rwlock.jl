@@ -24,13 +24,16 @@ mutable struct ReadWriteLock <: Base.AbstractLock
     # `readercount + MaxReaders` is the number of active or pending readers
     @atomic readercount::Int
     @atomic readerwait::Int
+    # number of pending readers released by a writer's unlock that have not
+    # resumed yet; guarded by the lock of `readwait`
+    readerrelease::Int
 end
 
 function ReadWriteLock()
 @static if VERSION < v"1.8"
     throw(ArgumentError("ReadWriteLock requires Julia v1.8 or greater"))
 else
-    return ReadWriteLock(ReentrantLock(), Threads.Condition(), Threads.Event(true), 0, 0)
+    return ReadWriteLock(ReentrantLock(), Threads.Condition(), Threads.Event(true), 0, 0, 0)
 end
 end
 
@@ -42,14 +45,41 @@ function readlock(rw::ReadWriteLock)
         # if we observe from our atomic operation that readercount is < 0,
         # a writer was active or pending, so we need initiate the "slowpath"
         # by acquiring the readwait lock
-        Base.@lock rw.readwait begin
-            # check our condition again, if it holds, then we get in line
-            # to be notified once the writer is done (the writer also acquires
-            # the readwait lock, so we'll be waiting until it releases it)
-            if rw.readercount < 0
-                # writer still active
-                wait(rw.readwait)
+        try
+            Base.@lock rw.readwait begin
+                # An unlocking writer mints one release permit per pending
+                # reader it releases (`readerrelease`); each pending reader
+                # consumes exactly one permit before acquiring the read side.
+                # Permits are fungible: one minted for a slow-to-resume reader
+                # may be consumed by another pending reader, which then stands
+                # in for it in the next writer's `readerwait` count. Counting
+                # permits (rather than re-checking `readercount`, which a
+                # later writer can make negative again) ensures a reader can
+                # neither deadlock behind a writer that already counted it as
+                # active nor slip past a writer that did not release it.
+                while rw.readerrelease == 0
+                    wait(rw.readwait)
+                end
+                rw.readerrelease -= 1
             end
+        catch
+            Base.@lock rw.readwait begin
+                if rw.readerrelease > 0
+                    # A writer's unlock already released a pending reader:
+                    # consume one permit as if we briefly held the read side,
+                    # and release it. If the permit was minted for another
+                    # reader, that reader is simply released by a later
+                    # writer's unlock instead (which still counts it).
+                    rw.readerrelease -= 1
+                    readunlock(rw)
+                else
+                    # No writer has released us: withdraw our pending reader
+                    # registration. Permits are minted under the readwait lock
+                    # we hold, so no unlocking writer can count us concurrently.
+                    @atomic :acquire_release rw.readercount -= 1
+                end
+            end
+            rethrow()
         end
     end
     return
@@ -151,10 +181,16 @@ function Base.islocked(rw::ReadWriteLock)
 end
 
 function Base.unlock(rw::ReadWriteLock)
-    r = (@atomic :acquire_release rw.readercount += MaxReaders)
-    if r > 0
-        # wake up waiting readers
-        Base.@lock rw.readwait notify(rw.readwait)
+    # flip the `readercount` sign back under the readwait lock, so that permit
+    # minting is atomic with respect to a cancelled reader withdrawing its
+    # registration (see the catch block in `readlock`)
+    Base.@lock rw.readwait begin
+        r = (@atomic :acquire_release rw.readercount += MaxReaders)
+        if r > 0
+            # mint one release permit per pending reader and wake them up
+            rw.readerrelease += r
+            notify(rw.readwait)
+        end
     end
     unlock(rw.writelock)
     return

@@ -9,6 +9,10 @@ using Test, ConcurrentUtilities
         @show Threads.nthreads(), threadid
         @test Threads.nthreads() == 1 ? (threadid == 1) : (threadid != 1)
         @test ConcurrentUtilities.@spawn(false, 1 + 1).storage === nothing
+        failed = ConcurrentUtilities.@spawn error("expected failure")
+        @test_throws TaskFailedException wait(failed)
+        @test all(t -> !istaskdone(t), ConcurrentUtilities.WORKER_TASKS)
+        @test fetch(ConcurrentUtilities.@spawn(1 + 1)) == 2
 
     end # @testset "ConcurrentUtilities.@spawn"
 
@@ -314,6 +318,167 @@ else
         put!(wc2, nothing)
         @test fetch(t2)
         @test !islocked(rw)
+
+        # A reader released by one writer must not wait behind the next writer,
+        # since the next writer includes that reader in readerwait. The reader
+        # is descheduled between its readercount increment and its slow path;
+        # we replay its steps deterministically.
+        rw = ReadWriteLock()
+        lock(rw)
+        @atomic rw.readercount += 1            # reader R increments, then stalls
+        unlock(rw)                             # W1 mints R's release permit
+        next_writer = @async begin
+            lock(rw)
+            unlock(rw)
+            true
+        end
+        while (@atomic rw.readerwait) != 1     # W2 counts R as an active reader
+            yield()
+        end
+        # R resumes its slow path: it must find the permit and proceed
+        Base.@lock rw.readwait begin
+            @test rw.readerrelease == 1
+            rw.readerrelease -= 1
+        end
+        readunlock(rw)                          # R releases; W2 can proceed
+        @test fetch(next_writer)
+        @test (@atomic rw.readercount) == 0
+        @test (@atomic rw.readerwait) == 0
+        @test rw.readerrelease == 0
+        @test !islocked(rw)
+
+        # A reader that increments while a later writer is active must wait for
+        # that writer even if an earlier writer released other readers in the
+        # meantime (regression: a stale snapshot let it slip past the writer).
+        rw = ReadWriteLock()
+        lock(rw)                                               # W1
+        released = @async (readlock(rw); readunlock(rw); true) # pending behind W1
+        while (@atomic rw.readercount) != -ConcurrentUtilities.MaxReaders + 1
+            yield()
+        end
+        unlock(rw)                                             # W1 releases it
+        @test fetch(released)
+        lock(rw)                                               # W2 active
+        late_reader = @async (readlock(rw); readunlock(rw); true)
+        while (@atomic rw.readercount) != -ConcurrentUtilities.MaxReaders + 1
+            yield()
+        end
+        Base.@lock rw.readwait @test rw.readerrelease == 0     # no leftover permit
+        @test !istaskdone(late_reader)
+        unlock(rw)                                             # W2 releases it
+        @test fetch(late_reader)
+        @test (@atomic rw.readercount) == 0
+        @test !islocked(rw)
+
+        # A pending reader whose slow-path wait throws while its writer still
+        # holds the lock must withdraw its registration.
+        rw = ReadWriteLock()
+        lock(rw)
+        interrupted = @async (readlock(rw); readunlock(rw); true)
+        while (@atomic rw.readercount) != -ConcurrentUtilities.MaxReaders + 1
+            yield()
+        end
+        while isempty(rw.readwait.waitq)
+            yield()
+        end
+        Base.@lock rw.readwait notify(rw.readwait, ErrorException("interrupt"), false, true)
+        @test_throws TaskFailedException wait(interrupted)
+        @test (@atomic rw.readercount) == -ConcurrentUtilities.MaxReaders
+        unlock(rw)
+        @test (@atomic rw.readercount) == 0
+        @test rw.readerrelease == 0
+        @test lock(() -> true, rw)
+        @test readlock(() -> true, rw)
+        @test !islocked(rw)
+
+        # A pending reader whose slow-path wait throws after a writer released
+        # it must consume its permit and stand in for the readunlock the next
+        # writer is waiting for (replayed deterministically, as above).
+        rw = ReadWriteLock()
+        lock(rw)
+        @atomic rw.readercount += 1            # reader R increments, then stalls
+        unlock(rw)                             # W1 mints R's release permit
+        next_writer = @async begin
+            lock(rw)
+            unlock(rw)
+            true
+        end
+        while (@atomic rw.readerwait) != 1
+            yield()
+        end
+        # R's slow path now throws; replay its cleanup
+        Base.@lock rw.readwait begin
+            @test rw.readerrelease == 1
+            rw.readerrelease -= 1
+            readunlock(rw)
+        end
+        @test fetch(next_writer)
+        @test (@atomic rw.readercount) == 0
+        @test (@atomic rw.readerwait) == 0
+        @test rw.readerrelease == 0
+        @test !islocked(rw)
+
+        # randomized stress: a writer must never overlap readers or writers
+        rw = ReadWriteLock()
+        active_readers = Threads.Atomic{Int}(0)
+        active_writers = Threads.Atomic{Int}(0)
+        violations = Threads.Atomic{Int}(0)
+        stress_tasks = Task[]
+        for _ in 1:4
+            push!(stress_tasks, Threads.@spawn begin
+                for _ in 1:250
+                    lock(rw)
+                    Threads.atomic_add!(active_writers, 1)
+                    if active_readers[] != 0 || active_writers[] != 1
+                        Threads.atomic_add!(violations, 1)
+                    end
+                    Threads.atomic_sub!(active_writers, 1)
+                    unlock(rw)
+                end
+            end)
+        end
+        for _ in 1:8
+            push!(stress_tasks, Threads.@spawn begin
+                for _ in 1:500
+                    readlock(rw)
+                    Threads.atomic_add!(active_readers, 1)
+                    if active_writers[] != 0
+                        Threads.atomic_add!(violations, 1)
+                    end
+                    Threads.atomic_sub!(active_readers, 1)
+                    readunlock(rw)
+                end
+            end)
+        end
+        foreach(wait, stress_tasks)
+        @test violations[] == 0
+        @test (@atomic rw.readercount) == 0
+        @test (@atomic rw.readerwait) == 0
+        @test rw.readerrelease == 0
+        @test !islocked(rw)
+
+@static if isdefined(Base, :CancellationTokenSource)
+        # real cancellation of a pending reader
+        rw = ReadWriteLock()
+        lock(rw)
+        source = Base.CancellationTokenSource()
+        cancelled = Base.ScopedValues.with(
+            () -> Threads.@spawn(readlock(rw)),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while isempty(rw.readwait.waitq)
+            yield()
+        end
+        Base.cancel!(source)
+        @test timedwait(() -> istaskdone(cancelled), 5) == :ok
+        @test_throws TaskFailedException wait(cancelled)
+        @test (@atomic rw.readercount) == -ConcurrentUtilities.MaxReaders
+        unlock(rw)
+        @test (@atomic rw.readercount) == 0
+        @test lock(() -> true, rw)
+        @test readlock(() -> true, rw)
+        @test !islocked(rw)
+end
 end # @static if VERSION < v"1.8"
     end
 
@@ -327,12 +492,19 @@ else
         tasks_out = zeros(Int, 16)
         tot = zeros(Int, 1)
         fl = FIFOLock()
-        waiters = let fl = fl
+        c = Base.GenericCondition{FIFOLock}(fl)
+        lock(c)
+        try
+            @test notify(c) == 0
+        finally
+            unlock(c)
+        end
+        waitq_tail = let fl = fl
             function ()
                 c = fl.cond_wait
                 lock(c)
                 try
-                    return length(c.waitq)
+                    return c.waitq.tail
                 finally
                     unlock(c)
                 end
@@ -340,6 +512,7 @@ else
         end
         lock(fl)
         try
+            tail = waitq_tail()
             for i in 1:16
                 # Queue each task before starting the next one so the FIFO
                 # assertion tracks lock wait order, not scheduler timing.
@@ -353,9 +526,10 @@ else
                     end
                 end
                 push!(test_tasks, t)
-                while waiters() < i
+                while waitq_tail() === tail
                     yield()
                 end
+                tail = waitq_tail()
             end
         finally
             unlock(fl)
@@ -370,6 +544,50 @@ else
         end
         @test tot[1] == 16
         @test tasks_out == 1:16
+
+@static if isdefined(Base, :CancellationTokenSource)
+        fl = FIFOLock()
+        lock(fl)
+        source = Base.CancellationTokenSource()
+        cancelled = Base.ScopedValues.with(
+            () -> Threads.@spawn(lock(fl)),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while isempty(fl.cond_wait)
+            yield()
+        end
+        Base.cancel!(source)
+        @test timedwait(() -> istaskdone(cancelled), 5) == :ok
+        @test_throws TaskFailedException wait(cancelled)
+        unlock(fl)
+        @test lock(() -> true, fl)
+        @test !islocked(fl)
+
+        # a task that catches the cancellation and keeps running must not be
+        # left with finalizers disabled
+        lock(fl)
+        source = Base.CancellationTokenSource()
+        survivor = Base.ScopedValues.with(
+            () -> Threads.@spawn(begin
+                try
+                    lock(fl)
+                    false
+                catch
+                    ccall(:jl_gc_get_finalizers_inhibited, Cint, (Ptr{Cvoid},), C_NULL) == 0
+                end
+            end),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while isempty(fl.cond_wait)
+            yield()
+        end
+        Base.cancel!(source)
+        @test timedwait(() -> istaskdone(survivor), 5) == :ok
+        @test fetch(survivor)
+        unlock(fl)
+        @test lock(() -> true, fl)
+        @test !islocked(fl)
+end
 end # @static if VERSION < v"1.10"
     end
 
@@ -387,6 +605,8 @@ end # @static if VERSION < v"1.10"
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
     include("pools.jl")
@@ -433,6 +653,21 @@ end
         t = nothing; ref = nothing; GC.gc(true); GC.gc(true); GC.gc(true)
         @show wkref
         # correctly GCed
+        @test wkref.value === nothing
+
+        # captures are also cleared when the spawned expression fails
+        ref = Ref(10)
+        wkref = WeakRef(ref)
+        t = let ref=ref
+            @wkspawn begin
+                $ref[]
+                error("expected failure")
+            end
+        end
+        @test_throws TaskFailedException wait(t)
+        @test t.code === nothing
+        ref = nothing
+        GC.gc(true); GC.gc(true); GC.gc(true)
         @test wkref.value === nothing
 #     end
 

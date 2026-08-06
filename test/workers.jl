@@ -9,14 +9,9 @@ using Test, IOCapture
         @test process_running(w.process)
         @test isopen(w.pipe)
         @test !Workers.terminated(w)
-        if !(istaskstarted(w.messages) && !istaskdone(w.messages))
-            @show w.messages
-        end
-        @test istaskstarted(w.messages) && !istaskdone(w.messages)
-        if !istaskstarted(w.output)
-            @show w.output
-        end
-        @test istaskstarted(w.output)
+        background_tasks = (w.messages, w.output, w.worksubmission)
+        @test timedwait(() -> all(istaskstarted, background_tasks), 10) == :ok
+        @test all(t -> !istaskdone(t), background_tasks)
         @test isempty(w.futures)
     end
     @testset "clean shutdown ($w)" begin
@@ -26,6 +21,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
 
@@ -39,6 +36,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
     end
 
@@ -84,6 +83,8 @@ using Test, IOCapture
         @test Workers.terminated(w)
         @test istaskstarted(w.messages) && istaskdone(w.messages)
         @test istaskstarted(w.output) && istaskdone(w.output)
+        @test istaskstarted(w.worksubmission) && istaskdone(w.worksubmission)
+        @test !isopen(w.workqueue)
         @test isempty(w.futures)
         close(w)
     end
@@ -97,6 +98,58 @@ using Test, IOCapture
         @test fetch(fut) isa Test.Pass
         close(w)
     end
+end
+
+@testset "Worker connection failure cleanup" begin
+    if Sys.isunix()
+        mktempdir() do dir
+            withenv("TMPDIR" => dir) do
+                @test_throws ConcurrentUtilities.TimeoutException Worker(
+                    exeflags=`--version`,
+                    connect_timeout=1,
+                    worker_redirect_io=devnull,
+                )
+                @test isempty(readdir(dir))
+            end
+        end
+    end
+end
+
+@testset "stale response after terminate! does not kill message loop" begin
+    w = Worker(worker_redirect_io=devnull)
+    fut = remote_eval(w, :(sleep(0.2); 1 + 1))
+    while Base.@lock(w.lock, isempty(w.futures))
+        yield()
+    end
+    lock(w.lock)
+    # while we hold the coordinator lock, the worker's response arrives and
+    # the messages task blocks behind us before it can look up the future
+    sleep(1)
+    # simulate a concurrent terminate! winning the race to the futures table
+    wte = WorkerTerminatedException(w)
+    for (_, f) in w.futures
+        close(f.value, wte)
+    end
+    empty!(w.futures)
+@static if VERSION < v"1.7"
+    w.terminated[] = true
+else
+    @atomic w.terminated = true
+end
+    unlock(w.lock)
+    @test_throws WorkerTerminatedException fetch(fut)
+    # finish what terminate! would have done, then wait for a clean shutdown;
+    # the stale response must be dropped rather than kill the messages task
+    close(w.workqueue, wte)
+    kill(w.process, Base.SIGKILL)
+    while !process_exited(w.process)
+        sleep(0.1)
+    end
+    close(w.pipe)
+    close(w.server)
+    @test wait(w)
+    @test istaskstarted(w.messages) && istaskdone(w.messages)
+    @test isempty(w.futures)
 end
 
 @testset "Workers print in color" begin

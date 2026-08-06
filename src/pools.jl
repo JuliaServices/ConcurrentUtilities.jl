@@ -145,13 +145,19 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
             wait(pool.lock)
         end
         pool.cur += 1
-        # now see if we can get an object from the pool for reuse
-        if !forcenew
-            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
-            while !isempty(objs)
-                obj = pop!(objs)
-                isvalid(obj) && return obj
+        try
+            # now see if we can get an object from the pool for reuse
+            if !forcenew
+                objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
+                while !isempty(objs)
+                    obj = pop!(objs)
+                    isvalid(obj) && return obj
+                end
             end
+        catch
+            # validation or pool lookup failed after taking a permit
+            releasepermit(pool)
+            rethrow()
         end
     end
     try

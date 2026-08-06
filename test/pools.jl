@@ -81,6 +81,12 @@ using ConcurrentUtilities.Pools, Test
         @test_throws ErrorException acquire(() -> error("oops"), pool; forcenew=true)
         @test Pools.in_use(pool) == 2
 
+        # throwing while validating a pooled object must also return the permit
+        release(pool, x1)
+        @test_throws ErrorException acquire(() -> 7, pool; isvalid=_ -> error("invalid"))
+        @test Pools.in_use(pool) == 1
+        x1 = acquire(() -> 7, pool; forcenew=true)
+
         # we can still acquire a new object
         x3 = acquire(() -> 7, pool; forcenew=true)
         @test x3 == 7
