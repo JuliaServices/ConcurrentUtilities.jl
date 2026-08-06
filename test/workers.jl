@@ -9,14 +9,9 @@ using Test, IOCapture
         @test process_running(w.process)
         @test isopen(w.pipe)
         @test !Workers.terminated(w)
-        if !(istaskstarted(w.messages) && !istaskdone(w.messages))
-            @show w.messages
-        end
-        @test istaskstarted(w.messages) && !istaskdone(w.messages)
-        if !istaskstarted(w.output)
-            @show w.output
-        end
-        @test istaskstarted(w.output)
+        background_tasks = (w.messages, w.output, w.worksubmission)
+        @test timedwait(() -> all(istaskstarted, background_tasks), 10) == :ok
+        @test all(t -> !istaskdone(t), background_tasks)
         @test isempty(w.futures)
     end
     @testset "clean shutdown ($w)" begin
