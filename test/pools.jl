@@ -119,6 +119,30 @@ using ConcurrentUtilities.Pools, Test
         @test Pools.in_pool(pool) == 0
     end
 
+    @testset "forced creation in a keyed pool" begin
+        pool = Pool{String, Int}(1)
+        x = acquire(() -> 1, pool, "a"; forcenew=true)
+        @test x == 1
+        release(pool, "a", x)
+        @test Pools.in_use(pool) == 0
+        @test Pools.in_pool(pool) == 1
+
+        x = acquire(() -> 2, pool, "a"; forcenew=true, isvalid=_ -> error("must not validate cached objects"))
+        @test x == 2
+        @test Pools.in_pool(pool) == 1
+        release(pool, "a", x)
+        @test Pools.in_use(pool) == 0
+        @test Pools.in_pool(pool) == 2
+
+        for expected in (2, 1)
+            x = acquire(() -> error("must reuse cached objects"), pool, "a")
+            @test x == expected
+            release(pool, "a")
+        end
+        @test Pools.in_use(pool) == 0
+        @test Pools.in_pool(pool) == 0
+    end
+
     @testset "keyed pool" begin
         # now test a keyed pool
         pool = Pool{String, Int}(3)

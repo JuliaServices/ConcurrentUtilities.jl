@@ -146,9 +146,10 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
         end
         pool.cur += 1
         try
+            # initialize the cache even when forcing a new object, so release can store it
+            objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
             # now see if we can get an object from the pool for reuse
             if !forcenew
-                objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
                 while !isempty(objs)
                     obj = pop!(objs)
                     isvalid(obj) && return obj
