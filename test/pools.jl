@@ -119,6 +119,40 @@ using ConcurrentUtilities.Pools, Test
         @test Pools.in_pool(pool) == 0
     end
 
+    @testset "validation permits concurrent pool operations" begin
+        for key in (nothing, "checked"), valid in (true, false)
+            otherkey = key === nothing ? nothing : "other"
+            pool = Pool{typeof(key), Int}(2)
+            held = acquire(() -> 2, pool, otherkey)
+            cached = acquire(() -> 1, pool, key)
+            release(pool, key, cached)
+            progressed = Ref(false)
+            observed_usage = Ref(0)
+            obj = acquire(() -> 4, pool, key; isvalid = _ -> begin
+                # A separate task cannot reenter the validator's lock. Use a
+                # nonblocking probe so this regression fails without hanging.
+                progressed[] = fetch(@async begin
+                    trylock(pool.lock) || return false
+                    unlock(pool.lock)
+                    observed_usage[] = Pools.in_use(pool)
+                    release(pool, otherkey, held)
+                    fresh = acquire(() -> 3, pool, otherkey; forcenew=true)
+                    release(pool, otherkey, fresh)
+                    drain!(pool)
+                    true
+                end)
+                valid
+            end)
+            @test progressed[]
+            @test observed_usage[] == 2
+            @test obj == (valid ? 1 : 4)
+            release(pool, key, obj)
+            progressed[] || release(pool, otherkey, held)
+            @test Pools.in_use(pool) == 0
+            @test Pools.in_pool(pool) == 1
+        end
+    end
+
     @testset "forced creation in a keyed pool" begin
         pool = Pool{String, Int}(1)
         x = acquire(() -> 1, pool, "a"; forcenew=true)
