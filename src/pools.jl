@@ -134,11 +134,15 @@ Each `acquire` call MUST be matched by exactly one `release` call.
 The `forcenew` keyword argument can be used to force the creation of a new object, ignoring any existing objects in the pool.
 The `isvalid` keyword argument can be used to specify a function that will be called to determine if an object is still valid
 for reuse. By default, all objects are considered valid.
+Validation runs without holding the pool lock. The object is exclusively held and
+counts toward the usage limit while being validated. Calls to `isvalid` can overlap
+across tasks, so any state they share must be synchronized by the caller.
 If there are no objects available for reuse, `f` will be called to create a new object.
 If the pool is already at its usage limit, `acquire` will block until an object is returned to the pool via `release`.
 """
 function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, isvalid::Function=TRUE) where {K, T}
     key isa K || keyerror(key, K)
+    local obj
     Base.@lock pool.lock begin
         # first get a permit
         while pool.cur >= pool.limit
@@ -148,24 +152,25 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
         try
             # initialize the cache even when forcing a new object, so release can store it
             objs = iskeyed(pool) ? get!(() -> safesizehint!(T[], pool.limit), pool.keyedvalues, key) : pool.values
-            # now see if we can get an object from the pool for reuse
-            if !forcenew
-                while !isempty(objs)
-                    obj = pop!(objs)
-                    isvalid(obj) && return obj
-                end
-            end
+            obj = forcenew || isempty(objs) ? nothing : pop!(objs)
         catch
-            # validation or pool lookup failed after taking a permit
+            # pool lookup failed after taking a permit
             releasepermit(pool)
             rethrow()
         end
     end
     try
+        while obj !== nothing
+            isvalid(obj) && return obj
+            Base.@lock pool.lock begin
+                objs = iskeyed(pool) ? pool.keyedvalues[key] : pool.values
+                obj = isempty(objs) ? nothing : pop!(objs)
+            end
+        end
         # if there weren't any objects to reuse or we were forcenew, we'll create a new one
         return f()
     catch
-        # if we error creating a new object, it's critical we return the permit to the pool
+        # validation or creation failed; return the reserved permit exactly once
         Base.@lock pool.lock releasepermit(pool)
         rethrow()
     end
