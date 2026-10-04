@@ -185,18 +185,21 @@ Release an object from usage by a `pool`, optionally keyed by the provided `key`
 If `obj` is provided, it will be returned to the pool for reuse.
 Otherwise, if `nothing` is returned, or `release(pool)` is called,
 the usage count will be decremented without an object being returned to the pool for reuse.
+A failed object return leaves the pool's usage count unchanged.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)
     Base.@lock pool.lock begin
-        # return the permit
-        releasepermit(pool)
+        # Reject excess releases before adding an object to the cache.
+        pool.cur > 0 || releaseerror()
         # if we're given an object, we'll put it back in the pool
         if obj !== nothing
             # if an invalid key is provided, we let the KeyError propagate
             objs = iskeyed(pool) ? pool.keyedvalues[key] : pool.values
             push!(objs, obj)
         end
+        # Return the permit only after caching succeeds.
+        releasepermit(pool)
     end
     return
 end
