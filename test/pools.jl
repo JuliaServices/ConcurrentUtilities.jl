@@ -1,7 +1,51 @@
 using ConcurrentUtilities.Pools, Test
 
+Base.@noinline function cached_key_refs(pool)
+    refs = WeakRef[]
+    for i in 1:8
+        key = fill(UInt8(i), 1024)
+        push!(refs, WeakRef(key))
+        obj = acquire(() -> i, pool, key)
+        release(pool, key, obj)
+    end
+    return refs
+end
+
 @testset "Pools" begin
     pool_size = length∘Pools.values
+    @testset "draining cached keys" begin
+        pool = Pool{Vector{UInt8}, Int}(1)
+        refs = cached_key_refs(pool)
+        GC.gc()
+        @test all(ref -> ref.value !== nothing, refs)
+        @test Pools.in_pool(pool) == 8
+        @test drain!(pool) === nothing
+        GC.gc()
+        @test all(ref -> ref.value === nothing, refs)
+        @test Pools.in_pool(pool) == 0
+
+        key = fill(UInt8(42), 1024)
+        obj = acquire(() -> 42, pool, key)
+        @test obj == 42
+        release(pool, key, obj)
+        @test acquire(() -> error("expected cached object"), pool, copy(key)) == 42
+        release(pool, key)
+
+        pool = Pool{String, Int}(2)
+        active = acquire(() -> 1, pool, "active")
+        cached = acquire(() -> 2, pool, "cached")
+        release(pool, "cached", cached)
+        drain!(pool)
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 0
+        release(pool, "active", active)
+        @test Pools.in_use(pool) == 0
+        @test acquire(() -> error("expected outstanding return"), pool, "active") == 1
+        release(pool, "active")
+        drain!(pool)
+        @test Pools.in_pool(pool) == 0
+    end
+
     @testset "nonkeyed and pool basics" begin
         pool = Pool{Int}(3)
         @test keytype(pool) === Nothing
