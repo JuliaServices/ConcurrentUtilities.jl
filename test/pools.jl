@@ -250,7 +250,35 @@ using ConcurrentUtilities.Pools, Test
 
         # error to release an invalid key back to the pool
         @test_throws KeyError release(pool, "z", 1)
-        @test_broken Pools.in_use(pool) == 3
+        @test Pools.in_use(pool) == 3
         @test Pools.in_pool(pool) == 1
+    end
+
+    @testset "failed keyed release keeps waiting acquires blocked" begin
+        pool = Pool{String, Int}(1)
+        held = acquire(() -> 1, pool, "held")
+        entered = Channel(1)
+        waiting = @async begin
+            put!(entered, nothing)
+            acquire(() -> 2, pool, "waiting")
+        end
+        take!(entered)
+        yield()
+        @test !istaskdone(waiting)
+        @test_throws KeyError release(pool, "unknown", held)
+        yield()
+        @test !istaskdone(waiting)
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 0
+
+        release(pool, "held", held)
+        @test fetch(waiting) == 2
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 1
+        release(pool, "waiting", 2)
+        @test Pools.in_use(pool) == 0
+        @test Pools.in_pool(pool) == 2
+        @test_throws ArgumentError release(pool, "held", held)
+        @test Pools.in_pool(pool) == 2
     end
 end
