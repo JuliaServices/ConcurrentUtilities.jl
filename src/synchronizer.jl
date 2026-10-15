@@ -105,19 +105,26 @@ incremented after `f` is called. By default, `incr` is 1.
 """
 function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
     check_closed(x)
-    Base.@lock x.cond begin
+    err = Base.@lock x.cond begin
         # wait until we're ready to execute f
         while x.i != i
             check_closed(x)
             wait(x.cond)
         end
         check_closed(x)
-        try
+        caught = try
             f()
+            nothing
         catch e
-            Base.throwto(x.coordinating_task, e)
+            e
         end
-        x.i += incr
-        notify(x.cond)
+        if caught === nothing
+            x.i += incr
+            notify(x.cond)
+        end
+        caught
     end
+    # This task never resumes after `throwto`, so it must not hold the lock.
+    err === nothing || Base.throwto(x.coordinating_task, err)
+    return nothing
 end
