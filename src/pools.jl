@@ -96,25 +96,36 @@ in_pool(pool::Pool{Nothing}) = Base.@lock pool.lock length(pool.values)
 
 """
     drain!(pool)
+    drain!(f, pool)
 
 Remove cached objects without releasing any active acquires.
 For keyed pools, cached key entries are discarded when no objects are in use.
+
+`drain!(f, pool)` then calls `f` on each removed object, outside the pool lock,
+for example `drain!(close, pool)`.
 """
-function drain!(pool::Pool{K}) where {K}
-    Base.@lock pool.lock begin
+function drain!(f, pool::Pool{K, T}) where {K, T}
+    drained = Base.@lock pool.lock begin
         if iskeyed(pool)
+            objs = T[]
+            foreach(vals -> append!(objs, vals), values(pool.keyedvalues))
             if pool.cur == 0
                 empty!(pool.keyedvalues)
-                return
+            else
+                foreach(empty!, values(pool.keyedvalues))
             end
-            for objs in values(pool.keyedvalues)
-                empty!(objs)
-            end
+            objs
         else
+            objs = copy(pool.values)
             empty!(pool.values)
+            objs
         end
     end
+    foreach(f, drained)
+    return
 end
+
+drain!(pool::Pool) = drain!(_ -> nothing, pool)
 
 # in VERSION >= v"1.7", we can replace `TRUE` with `Returns(true)`
 TRUE(x) = true

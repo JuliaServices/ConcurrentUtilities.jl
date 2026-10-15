@@ -46,6 +46,27 @@ end
         @test Pools.in_pool(pool) == 0
     end
 
+    @testset "drain! with a cleanup function" begin
+        for pool in (Pool{Int}(4), Pool{String, Int}(4))
+            key = keytype(pool) === Nothing ? nothing : "k"
+            objs = [acquire(() -> i, pool, key; forcenew=true) for i in 1:3]
+            foreach(obj -> release(pool, key, obj), objs[1:2])
+            cleaned = Int[]
+            drain!(pool) do obj
+                @test !islocked(pool.lock)
+                push!(cleaned, obj)
+            end
+            @test sort!(cleaned) == [1, 2]
+            @test Pools.in_pool(pool) == 0
+            @test Pools.in_use(pool) == 1
+            # the outstanding object can still be returned under its key
+            release(pool, key, objs[3])
+            drain!(obj -> push!(cleaned, obj), pool)
+            @test cleaned[end] == 3
+            @test Pools.in_pool(pool) == 0
+        end
+    end
+
     @testset "nonkeyed and pool basics" begin
         pool = Pool{Int}(3)
         @test keytype(pool) === Nothing
