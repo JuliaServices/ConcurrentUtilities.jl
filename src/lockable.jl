@@ -1,5 +1,5 @@
 """
-  Lockable(value, lock = ReentrantLock())
+    Lockable(value, lock = ReentrantLock())
 
 Creates a `Lockable` object that wraps `value` and
 associates it with the provided `lock`.
@@ -14,7 +14,7 @@ Lockable(value) = Lockable(value, ReentrantLock())
 Base.getindex(l::Lockable) = l.value
 
 """
-  lock(f::Function, l::Lockable)
+    lock(f::Function, l::Lockable)
 
 Acquire the lock associated with `l`, execute `f` with the lock held,
 and release the lock when `f` returns. `f` will receive one positional
