@@ -97,11 +97,16 @@ in_pool(pool::Pool{Nothing}) = Base.@lock pool.lock length(pool.values)
 """
     drain!(pool)
 
-Remove all objects from the pool for reuse, but do not release any active acquires.
+Remove cached objects without releasing any active acquires.
+For keyed pools, cached key entries are discarded when no objects are in use.
 """
 function drain!(pool::Pool{K}) where {K}
     Base.@lock pool.lock begin
         if iskeyed(pool)
+            if pool.cur == 0
+                empty!(pool.keyedvalues)
+                return
+            end
             for objs in values(pool.keyedvalues)
                 empty!(objs)
             end
