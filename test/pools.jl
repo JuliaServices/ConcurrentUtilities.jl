@@ -1,7 +1,72 @@
 using ConcurrentUtilities.Pools, Test
 
+Base.@noinline function cached_key_refs(pool)
+    refs = WeakRef[]
+    for i in 1:8
+        key = fill(UInt8(i), 1024)
+        push!(refs, WeakRef(key))
+        obj = acquire(() -> i, pool, key)
+        release(pool, key, obj)
+    end
+    return refs
+end
+
 @testset "Pools" begin
     pool_size = length∘Pools.values
+    @testset "draining cached keys" begin
+        pool = Pool{Vector{UInt8}, Int}(1)
+        refs = cached_key_refs(pool)
+        GC.gc()
+        @test all(ref -> ref.value !== nothing, refs)
+        @test Pools.in_pool(pool) == 8
+        @test drain!(pool) === nothing
+        GC.gc()
+        @test all(ref -> ref.value === nothing, refs)
+        @test Pools.in_pool(pool) == 0
+
+        key = fill(UInt8(42), 1024)
+        obj = acquire(() -> 42, pool, key)
+        @test obj == 42
+        release(pool, key, obj)
+        @test acquire(() -> error("expected cached object"), pool, copy(key)) == 42
+        release(pool, key)
+
+        pool = Pool{String, Int}(2)
+        active = acquire(() -> 1, pool, "active")
+        cached = acquire(() -> 2, pool, "cached")
+        release(pool, "cached", cached)
+        drain!(pool)
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 0
+        release(pool, "active", active)
+        @test Pools.in_use(pool) == 0
+        @test acquire(() -> error("expected outstanding return"), pool, "active") == 1
+        release(pool, "active")
+        drain!(pool)
+        @test Pools.in_pool(pool) == 0
+    end
+
+    @testset "drain! with a cleanup function" begin
+        for pool in (Pool{Int}(4), Pool{String, Int}(4))
+            key = keytype(pool) === Nothing ? nothing : "k"
+            objs = [acquire(() -> i, pool, key; forcenew=true) for i in 1:3]
+            foreach(obj -> release(pool, key, obj), objs[1:2])
+            cleaned = Int[]
+            drain!(pool) do obj
+                @test !islocked(pool.lock)
+                push!(cleaned, obj)
+            end
+            @test sort!(cleaned) == [1, 2]
+            @test Pools.in_pool(pool) == 0
+            @test Pools.in_use(pool) == 1
+            # the outstanding object can still be returned under its key
+            release(pool, key, objs[3])
+            drain!(obj -> push!(cleaned, obj), pool)
+            @test cleaned[end] == 3
+            @test Pools.in_pool(pool) == 0
+        end
+    end
+
     @testset "nonkeyed and pool basics" begin
         pool = Pool{Int}(3)
         @test keytype(pool) === Nothing
@@ -250,7 +315,35 @@ using ConcurrentUtilities.Pools, Test
 
         # error to release an invalid key back to the pool
         @test_throws KeyError release(pool, "z", 1)
-        @test_broken Pools.in_use(pool) == 3
+        @test Pools.in_use(pool) == 3
         @test Pools.in_pool(pool) == 1
+    end
+
+    @testset "failed keyed release keeps waiting acquires blocked" begin
+        pool = Pool{String, Int}(1)
+        held = acquire(() -> 1, pool, "held")
+        entered = Channel(1)
+        waiting = @async begin
+            put!(entered, nothing)
+            acquire(() -> 2, pool, "waiting")
+        end
+        take!(entered)
+        yield()
+        @test !istaskdone(waiting)
+        @test_throws KeyError release(pool, "unknown", held)
+        yield()
+        @test !istaskdone(waiting)
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 0
+
+        release(pool, "held", held)
+        @test fetch(waiting) == 2
+        @test Pools.in_use(pool) == 1
+        @test Pools.in_pool(pool) == 1
+        release(pool, "waiting", 2)
+        @test Pools.in_use(pool) == 0
+        @test Pools.in_pool(pool) == 2
+        @test_throws ArgumentError release(pool, "held", held)
+        @test Pools.in_pool(pool) == 2
     end
 end

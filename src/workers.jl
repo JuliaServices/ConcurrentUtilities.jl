@@ -50,7 +50,11 @@ else
 end
 end
 
-# used to close FutureResult.value channels when a worker terminates
+"""
+    WorkerTerminatedException
+
+Thrown for a request sent to, or still pending on, a terminated [`Worker`](@ref).
+"""
 struct WorkerTerminatedException <: Exception
     worker::Worker
 end
@@ -77,9 +81,13 @@ end
 
 terminated(w::Worker) = @atomicget(w.terminated)
 
-# performs all the "closing" tasks of worker fields
-# but does not *wait* for a final close state
-# so typically callers should call wait(w) after this
+"""
+    terminate!(w::Worker)
+
+Kill the worker process. Pending and later requests fail with
+[`WorkerTerminatedException`](@ref). Call `wait(w)` to wait for the worker's
+background tasks to finish.
+"""
 function terminate!(w::Worker, from::Symbol=:manual)
     if @atomiccas(w.terminated, false, true).success
         # we won getting to close down the worker
@@ -115,8 +123,13 @@ function watch_and_terminate!(w::Worker)
     true
 end
 
-# gracefully terminate a worker by sending a shutdown message
-# and waiting for the other tasks to perform worker shutdown
+"""
+    close(w::Worker)
+
+Ask the worker process to exit and wait until it has. Requests that have not
+finished fail with [`WorkerTerminatedException`](@ref). Use [`terminate!`](@ref) for
+a worker that does not respond.
+"""
 function Base.close(w::Worker)
     if !terminated(w) && isopen(w.pipe)
         req = Request(Symbol(), :(), rand(UInt64), true)
@@ -138,6 +151,17 @@ Base.show(io::IO, w::Worker) = print(io, "Worker(pid=$(w.pid)", terminated(w) ? 
 # eventually cleaned up properly
 const GLOBAL_CALLBACK_PER_WORKER = Ref{Any}()
 
+"""
+    Worker(; env=ENV, dir=pwd(), threads="auto", exeflags=`--threads=\$threads`,
+        connect_timeout=60, worker_redirect_io=stdout, worker_redirect_fn)
+
+Start a Julia process that evaluates expressions sent with [`remote_eval`](@ref) and
+[`remote_fetch`](@ref). The process uses this session's load path, depot path, and
+active project unless `env` sets them, runs in `dir`, and must connect within
+`connect_timeout` seconds. Each line it prints is passed to
+`worker_redirect_fn(worker_redirect_io, pid, line)`. Stop it with `close(w)` or
+[`terminate!`](@ref).
+"""
 function Worker(;
     env::AbstractDict=ENV,
     dir::String=pwd(),
@@ -292,6 +316,13 @@ function process_work(w::Worker)
     true
 end
 
+"""
+    remote_eval(w::Worker, [mod::Module=Main,] expr)
+
+Start evaluating `expr` in module `mod` on the worker and return a future; `fetch` it
+for the value, or to rethrow the worker's error. `mod` must be loaded in the worker.
+Without `mod`, a `begin ... end` block is evaluated as top-level code.
+"""
 remote_eval(w::Worker, expr) = remote_eval(w, Main, expr.head == :block ? Expr(:toplevel, expr.args...) : expr)
 
 function remote_eval(w::Worker, mod, expr)
@@ -303,7 +334,11 @@ function remote_eval(w::Worker, mod, expr)
     return fut
 end
 
-# convenience call to eval and fetch in one step
+"""
+    remote_fetch(w::Worker, [mod::Module,] expr)
+
+Evaluate `expr` on the worker and wait for the result: `fetch(remote_eval(w, ...))`.
+"""
 remote_fetch(w::Worker, args...) = fetch(remote_eval(w, args...))
 
 # compat for `Threads.@spawn :interactive expr`

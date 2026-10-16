@@ -108,6 +108,20 @@ using Test, ConcurrentUtilities
             e.task.result
         end
         @test e == ConcurrentUtilities.closed_exception()
+
+        # an error in `f` reaches the coordinating task and leaves the lock free,
+        # so the coordinator can still close or reset the synchronizer
+        y = OrderedSynchronizer()
+        err = try
+            @sync @async put!(() -> error("boom"), y, 1)
+            nothing
+        catch e
+            e
+        end
+        @test err == ErrorException("boom")
+        t = @async (close(y); reset!(y))
+        @test timedwait(() -> istaskdone(t), 10) == :ok
+        @test isopen(y)
     end
 
     @testset "ReadWriteLock" begin

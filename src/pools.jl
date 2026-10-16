@@ -96,20 +96,36 @@ in_pool(pool::Pool{Nothing}) = Base.@lock pool.lock length(pool.values)
 
 """
     drain!(pool)
+    drain!(f, pool)
 
-Remove all objects from the pool for reuse, but do not release any active acquires.
+Remove cached objects without releasing any active acquires.
+For keyed pools, cached key entries are discarded when no objects are in use.
+
+`drain!(f, pool)` then calls `f` on each removed object, outside the pool lock,
+for example `drain!(close, pool)`.
 """
-function drain!(pool::Pool{K}) where {K}
-    Base.@lock pool.lock begin
+function drain!(f, pool::Pool{K, T}) where {K, T}
+    drained = Base.@lock pool.lock begin
         if iskeyed(pool)
-            for objs in values(pool.keyedvalues)
-                empty!(objs)
+            objs = T[]
+            foreach(vals -> append!(objs, vals), values(pool.keyedvalues))
+            if pool.cur == 0
+                empty!(pool.keyedvalues)
+            else
+                foreach(empty!, values(pool.keyedvalues))
             end
+            objs
         else
+            objs = copy(pool.values)
             empty!(pool.values)
+            objs
         end
     end
+    foreach(f, drained)
+    return
 end
+
+drain!(pool::Pool) = drain!(_ -> nothing, pool)
 
 # in VERSION >= v"1.7", we can replace `TRUE` with `Returns(true)`
 TRUE(x) = true
@@ -185,18 +201,21 @@ Release an object from usage by a `pool`, optionally keyed by the provided `key`
 If `obj` is provided, it will be returned to the pool for reuse.
 Otherwise, if `nothing` is returned, or `release(pool)` is called,
 the usage count will be decremented without an object being returned to the pool for reuse.
+A failed object return leaves the pool's usage count unchanged.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)
     Base.@lock pool.lock begin
-        # return the permit
-        releasepermit(pool)
+        # Reject excess releases before adding an object to the cache.
+        pool.cur > 0 || releaseerror()
         # if we're given an object, we'll put it back in the pool
         if obj !== nothing
             # if an invalid key is provided, we let the KeyError propagate
             objs = iskeyed(pool) ? pool.keyedvalues[key] : pool.values
             push!(objs, obj)
         end
+        # Return the permit only after caching succeeds.
+        releasepermit(pool)
     end
     return
 end
