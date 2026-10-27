@@ -32,7 +32,7 @@ end
 Base.fetch(f::FutureResult) = fetch(f.value)
 
 mutable struct Worker
-    lock::ReentrantLock # protects .futures, .nextid, and writes to .pipe; no other fields are modified after construction
+    lock::ReentrantLock # protects .futures and .nextid; no other fields are modified after construction
     pid::Int
     process::Base.Process
     server::Sockets.PipeServer
@@ -82,8 +82,8 @@ end
 
 terminated(w::Worker) = @atomicget(w.terminated)
 
-# Serialize `x` to bytes up front: a failure then leaves nothing on the shared pipe,
-# and the complete message is written with a single `write`.
+# Serialize `x` to bytes up front: a failure then leaves nothing on the shared pipe, and
+# each message goes out in a single `write`, which concurrent writers cannot interleave.
 function serialized(x)
     io = IOBuffer()
     serialize(io, x)
@@ -142,10 +142,7 @@ a worker that does not respond.
 function Base.close(w::Worker)
     if !terminated(w) && isopen(w.pipe)
         req = Request(Symbol(), :(), UInt64(0), true)
-        bytes = serialized(req)
-        Base.@lock w.lock begin
-            write(w.pipe, bytes)
-        end
+        write(w.pipe, serialized(req))
     end
     wait(w)
     return
@@ -315,14 +312,16 @@ function process_work(w::Worker)
                 close(fut.value, CapturedException(e, catch_backtrace()))
                 continue
             end
-            Base.@lock w.lock begin
+            submitted = Base.@lock w.lock begin
                 if terminated(w)
                     close(fut.value, WorkerTerminatedException(w))
+                    false
                 else
                     w.futures[req.id] = fut
-                    write(w.pipe, bytes)
+                    true
                 end
             end
+            submitted && write(w.pipe, bytes)
         end
     catch e
         # @error "Error processing work for worker $(w.pid)" exception=(e, catch_backtrace())
