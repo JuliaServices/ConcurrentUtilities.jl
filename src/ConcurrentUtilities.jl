@@ -13,6 +13,26 @@ macro samethreadpool_spawn(expr)
     end
 end
 
+"""
+    cleanup_lock(f, l)
+
+Like `lock(f, l)`, but the acquisition cannot be cancelled. Julia 1.14+ cancellation
+makes a contended `lock` throw in a cancelled task, which would skip cleanup such as
+returning a permit or releasing a held lock.
+"""
+function cleanup_lock(f, l)
+    @static if hasmethod(lock, Tuple{ReentrantLock}, (:cancel,))
+        lock(l; cancel=nothing)
+    else
+        lock(l)
+    end
+    try
+        return f()
+    finally
+        unlock(l)
+    end
+end
+
 include("try_with_timeout.jl")
 include("workers.jl")
 using .Workers

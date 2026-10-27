@@ -49,7 +49,7 @@ end
 end
 
 function Base.close(x::OrderedSynchronizer, excp::Exception=closed_exception())
-    Base.@lock x.cond begin
+    cleanup_lock(x.cond) do
 @static if VERSION < v"1.7"
         x.closed[] = true
 else
