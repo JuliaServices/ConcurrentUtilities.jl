@@ -2,6 +2,7 @@ module Pools
 
 export Pool, acquire, release, drain!
 import Base: acquire, release
+import ..cleanup_lock
 
 """
     Pool{T}(limit::Int=4096)
@@ -187,7 +188,7 @@ function Base.acquire(f, pool::Pool{K, T}, key=nothing; forcenew::Bool=false, is
         return f()
     catch
         # validation or creation failed; return the reserved permit exactly once
-        Base.@lock pool.lock releasepermit(pool)
+        cleanup_lock(() -> releasepermit(pool), pool.lock)
         rethrow()
     end
 end
@@ -205,7 +206,7 @@ A failed object return leaves the pool's usage count unchanged.
 """
 function Base.release(pool::Pool{K, T}, key, obj::Union{T, Nothing}=nothing) where {K, T}
     key isa K || keyerror(key, K)
-    Base.@lock pool.lock begin
+    cleanup_lock(pool.lock) do
         # Reject excess releases before adding an object to the cache.
         pool.cur > 0 || releaseerror()
         # if we're given an object, we'll put it back in the pool

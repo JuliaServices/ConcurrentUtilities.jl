@@ -63,7 +63,7 @@ function readlock(rw::ReadWriteLock)
                 rw.readerrelease -= 1
             end
         catch
-            Base.@lock rw.readwait begin
+            cleanup_lock(rw.readwait) do
                 if rw.readerrelease > 0
                     # A writer's unlock already released a pending reader:
                     # consume one permit as if we briefly held the read side,
@@ -109,7 +109,7 @@ function readunlock(rw::ReadWriteLock)
             # we observed that there was a pending write AND we just
             # observed that we were the last reader, so it's our
             # responsibility to notify the writer that it can proceed
-            notify(rw.writeready)
+            cleanup_lock(() -> notify(rw.writeready), rw.writeready.notify)
         end
     end
     return
@@ -184,7 +184,7 @@ function Base.unlock(rw::ReadWriteLock)
     # flip the `readercount` sign back under the readwait lock, so that permit
     # minting is atomic with respect to a cancelled reader withdrawing its
     # registration (see the catch block in `readlock`)
-    Base.@lock rw.readwait begin
+    cleanup_lock(rw.readwait) do
         r = (@atomic :acquire_release rw.readercount += MaxReaders)
         if r > 0
             # mint one release permit per pending reader and wake them up

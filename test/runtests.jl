@@ -605,6 +605,84 @@ end
 end # @static if VERSION < v"1.10"
     end
 
+@static if isdefined(Base, :CancellationTokenSource)
+    @testset "cleanup completes in cancelled tasks" begin
+        # run `f` in a task whose cancellation scope is already cancelled
+        function cancelled_spawn(f)
+            source = Base.CancellationTokenSource()
+            Base.cancel!(source)
+            return Base.ScopedValues.with(() -> Threads.@spawn(f()),
+                Base.CANCEL_TOKEN => Base.CancellationToken(source))
+        end
+        shielded(f) = Base.ScopedValues.with(f, Base.CANCEL_TOKEN => nothing)
+        # hold `rl` until the task started by `start` parks on it or finishes; the
+        # waitq is read under its spinlock, so a refused (cancelled) acquisition,
+        # which withdraws before releasing it, never counts as parked
+        function contend(start, rl::ReentrantLock)
+            lock(rl)
+            t = start()
+            parked = timedwait(() -> istaskdone(t) ||
+                Base.@lock(rl.cond_wait, !isempty(rl.cond_wait)), 30)
+            unlock(rl)
+            @test parked == :ok
+            @test timedwait(() -> istaskdone(t), 30) == :ok
+            return t
+        end
+
+        # releasing an object returns its permit
+        pool = Pool{Int}(1)
+        obj = acquire(() -> 1, pool)
+        t = contend(() -> cancelled_spawn(() -> release(pool, obj)), pool.lock.lock)
+        @test !istaskfailed(t)
+        @test ConcurrentUtilities.Pools.in_use(pool) == 0
+
+        # so does a failed object creation
+        pool = Pool{Int}(1)
+        ready = Channel{Nothing}(1)
+        go = Threads.Event()
+        t = cancelled_spawn() do
+            acquire(pool; forcenew=true) do
+                put!(ready, nothing)
+                shielded(() -> wait(go))
+                error("creation failed")
+            end
+        end
+        @test timedwait(() -> isready(ready), 30) == :ok
+        contend(() -> (notify(go); t), pool.lock.lock)
+        @test istaskfailed(t)
+        @test ConcurrentUtilities.Pools.in_use(pool) == 0
+
+        # unlocking a write lock releases it
+        rw = ReadWriteLock()
+        t = contend(() -> cancelled_spawn(() -> (lock(rw); unlock(rw))), rw.readwait.lock)
+        @test !istaskfailed(t)
+        @test !islocked(rw)
+
+        # a cancelled pending reader withdraws its registration
+        rw = ReadWriteLock()
+        lock(rw)
+        t = contend(() -> cancelled_spawn(() -> readlock(rw)), rw.readwait.lock)
+        @test istaskfailed(t)
+        unlock(rw)
+        @test (@atomic rw.readercount) == 0
+        @test trylock(rw) && (unlock(rw); true)
+
+        # closing a synchronizer wakes its waiters
+        x = OrderedSynchronizer()
+        waiter = Threads.@spawn try
+            put!(() -> nothing, x, 2)
+            false
+        catch e
+            e isa InvalidStateException
+        end
+        t = contend(() -> cancelled_spawn(() -> close(x)), x.cond.lock)
+        @test !istaskfailed(t)
+        @test !isopen(x)
+        @test timedwait(() -> istaskdone(waiter), 30) == :ok
+        @test istaskdone(waiter) && fetch(waiter)
+    end
+end
+
     # track all workers every created
     ALL_WORKERS = []
     ConcurrentUtilities.Workers.GLOBAL_CALLBACK_PER_WORKER[] = w -> push!(ALL_WORKERS, w)
