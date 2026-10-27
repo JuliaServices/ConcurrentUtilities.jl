@@ -32,7 +32,7 @@ end
 Base.fetch(f::FutureResult) = fetch(f.value)
 
 mutable struct Worker
-    lock::ReentrantLock # protects the .futures field; no other fields are modified after construction
+    lock::ReentrantLock # protects .futures, .nextid, and writes to .pipe; no other fields are modified after construction
     pid::Int
     process::Base.Process
     server::Sockets.PipeServer
@@ -43,6 +43,7 @@ mutable struct Worker
     worksubmission::Task
     workqueue::Channel{Tuple{Request, FutureResult}}
     futures::Dict{UInt64, FutureResult} # Request.id -> FutureResult
+    nextid::UInt64 # last Request.id handed out
 @static if VERSION < v"1.7"
     terminated::Threads.Atomic{Bool}
 else
@@ -80,6 +81,14 @@ macro atomicget(ex)
 end
 
 terminated(w::Worker) = @atomicget(w.terminated)
+
+# Serialize `x` to bytes up front: a failure then leaves nothing on the shared pipe,
+# and the complete message is written with a single `write`.
+function serialized(x)
+    io = IOBuffer()
+    serialize(io, x)
+    return take!(io)
+end
 
 """
     terminate!(w::Worker)
@@ -132,9 +141,10 @@ a worker that does not respond.
 """
 function Base.close(w::Worker)
     if !terminated(w) && isopen(w.pipe)
-        req = Request(Symbol(), :(), rand(UInt64), true)
+        req = Request(Symbol(), :(), UInt64(0), true)
+        bytes = serialized(req)
         Base.@lock w.lock begin
-            serialize(w.pipe, req)
+            write(w.pipe, bytes)
         end
     end
     wait(w)
@@ -210,9 +220,9 @@ function Worker(;
         pipe = try_with_timeout(x -> Sockets.accept(server), connect_timeout)
         # create worker
 @static if VERSION < v"1.7"
-        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), Threads.Atomic{Bool}(false))
+        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), UInt64(0), Threads.Atomic{Bool}(false))
 else
-        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), false)
+        w = Worker(ReentrantLock(), pid, proc, server, pipe, Task(nothing), Task(nothing), Task(nothing), Task(nothing), Channel{Tuple{Request, FutureResult}}(), Dict{UInt64, FutureResult}(), UInt64(0), false)
 end
         ## start a task to watch for worker process termination
         w.process_watch = Threads.@spawn watch_and_terminate!(w)
@@ -297,16 +307,22 @@ function process_work(w::Worker)
     try
         for (req, fut) in w.workqueue
             # println("Sending request $(req) to worker $(w.pid)")
-            submitted = Base.@lock w.lock begin
+            # a request that cannot be serialized fails alone instead of leaving a
+            # partial message on the pipe
+            bytes = try
+                serialized(req)
+            catch e
+                close(fut.value, CapturedException(e, catch_backtrace()))
+                continue
+            end
+            Base.@lock w.lock begin
                 if terminated(w)
                     close(fut.value, WorkerTerminatedException(w))
-                    false
                 else
                     w.futures[req.id] = fut
-                    true
+                    write(w.pipe, bytes)
                 end
             end
-            submitted && serialize(w.pipe, req)
         end
     catch e
         # @error "Error processing work for worker $(w.pid)" exception=(e, catch_backtrace())
@@ -327,8 +343,10 @@ remote_eval(w::Worker, expr) = remote_eval(w, Main, expr.head == :block ? Expr(:
 
 function remote_eval(w::Worker, mod, expr)
     terminated(w) && throw(WorkerTerminatedException(w))
+    # ids come from a counter, not the caller's (possibly seeded) RNG, so in-flight ids are unique
+    id = Base.@lock w.lock (w.nextid += UInt64(1))
     # we only send the Symbol module name to the worker
-    req = Request(nameof(mod), expr, rand(UInt64), false)
+    req = Request(nameof(mod), expr, id, false)
     fut = FutureResult(req.id, Channel(1))
     put!(w.workqueue, (req, fut))
     return fut
@@ -404,9 +422,16 @@ function serve_requests(io)
             catch e
                 resp = Response(nothing, CapturedException(e, catch_backtrace()), r.id)
             finally
+                bytes = try
+                    serialized(resp)
+                catch e
+                    # the result (or its error) cannot be serialized: fail just this request
+                    msg = "worker could not serialize the response: " * sprint(showerror, e)
+                    serialized(Response(nothing, ErrorException(msg), r.id))
+                end
                 Base.@lock iolock begin
                     # println("sending response: $(resp)")
-                    serialize(io, resp)
+                    write(io, bytes)
                 end
             end
         end
