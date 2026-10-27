@@ -1,5 +1,5 @@
 using ConcurrentUtilities.Workers
-using Test, IOCapture
+using Test, IOCapture, Random
 
 @testset "Worker basics" verbose=true begin
 
@@ -98,6 +98,36 @@ using Test, IOCapture
         @test fetch(fut) isa Test.Pass
         close(w)
     end
+end
+
+@testset "requests fail independently" begin
+    # bounded fetch, so a regression fails the test instead of hanging the suite
+    function fetchwithin(fut, secs=60)
+        t = Threads.@spawn try
+            fetch(fut)
+        catch e
+            e
+        end
+        return timedwait(() -> istaskdone(t), secs) == :ok ? fetch(t) : :timeout
+    end
+    w = Worker(; worker_redirect_io=devnull)
+    # request ids do not come from the caller's RNG, which callers may seed
+    Random.seed!(7)
+    slow = remote_eval(w, :(sleep(0.5); 1))
+    Random.seed!(7)
+    fast = remote_eval(w, :(identity(2)))
+    @test slow.id != fast.id
+    @test fetchwithin(fast) == 2
+    @test fetchwithin(slow) == 1
+    # a result the worker cannot serialize fails only that request
+    err = fetchwithin(remote_eval(w, :(current_task())))
+    @test err isa ErrorException
+    @test occursin("could not serialize", err.msg)
+    # so does a request the coordinator cannot serialize
+    @test fetchwithin(remote_eval(w, Expr(:call, :identity, current_task()))) isa CapturedException
+    @test fetchwithin(remote_eval(w, :(1 + 2))) == 3
+    @test !Workers.terminated(w)
+    close(w)
 end
 
 @testset "Worker connection failure cleanup" begin
