@@ -171,6 +171,9 @@ else
                     if (@atomic :acquire rw.readercount) < 0
                         observed_writer_state[] = true
                     end
+                    # if this task runs on thread 1, the root task (pinned there) must
+                    # still get to run and set `stop_observing`
+                    yield()
                 end
                 readunlock(rw)
             end
