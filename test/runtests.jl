@@ -109,19 +109,31 @@ using Test, ConcurrentUtilities
         end
         @test e == ConcurrentUtilities.closed_exception()
 
-        # an error in `f` reaches the coordinating task and leaves the lock free,
-        # so the coordinator can still close or reset the synchronizer
+        # an error in `f` fails that `put!` and closes the synchronizer with it, so
+        # waiting and later `put!`s fail too instead of waiting forever
         y = OrderedSynchronizer()
+        tasks = Task[]
         err = try
-            @sync @async put!(() -> error("boom"), y, 1)
+            @sync for i in 1:4
+                push!(tasks, Threads.@spawn put!(() -> i == 2 && error("boom"), y, i))
+            end
             nothing
         catch e
             e
         end
-        @test err == ErrorException("boom")
+        @test err isa CompositeException
+        @test all(istaskdone, tasks)
+        @test !istaskfailed(tasks[1])
+        @test all(t -> istaskfailed(t) && t.exception == ErrorException("boom"), tasks[2:end])
+        @test !isopen(y)
+        @test_throws ErrorException("boom") put!(() -> nothing, y, 2)
+        # the lock is free, so the synchronizer can be reset and reused
         t = @async (close(y); reset!(y))
         @test timedwait(() -> istaskdone(t), 10) == :ok
         @test isopen(y)
+        ran = Ref(false)
+        put!(() -> (ran[] = true), y, 1)
+        @test ran[]
     end
 
     @testset "ReadWriteLock" begin
