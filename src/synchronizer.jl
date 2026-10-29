@@ -14,11 +14,14 @@ check to see if it's their turn to execute.
 
 A synchronizer's state can be reset to a specific value (1 by default)
 by calling `reset!(x, i)`.
+
+`close(x, excp)` makes waiting and later `put!` calls throw `excp`
+(an `InvalidStateException` by default) until `reset!` reopens `x`.
 """
 mutable struct OrderedSynchronizer
-    coordinating_task::Task
     cond::Threads.Condition
     i::Int
+    excp::Union{Nothing, Exception}
 @static if VERSION < v"1.7"
     closed::Threads.Atomic{Bool}
 else
@@ -27,9 +30,9 @@ end
 end
 
 @static if VERSION < v"1.7"
-OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i, Threads.Atomic{Bool}(false))
+OrderedSynchronizer(i=1) = OrderedSynchronizer(Threads.Condition(), i, nothing, Threads.Atomic{Bool}(false))
 else
-OrderedSynchronizer(i=1) = OrderedSynchronizer(current_task(), Threads.Condition(), i, false)
+OrderedSynchronizer(i=1) = OrderedSynchronizer(Threads.Condition(), i, nothing, false)
 end
 
 """
@@ -40,6 +43,7 @@ Reset the state of `x` to `i`.
 function reset!(x::OrderedSynchronizer, i=1)
     Base.@lock x.cond begin
         x.i = i
+        x.excp = nothing
 @static if VERSION < v"1.7"
         x.closed[] = false
 else
@@ -50,10 +54,11 @@ end
 
 function Base.close(x::OrderedSynchronizer, excp::Exception=closed_exception())
     cleanup_lock(x.cond) do
+        x.excp = excp
 @static if VERSION < v"1.7"
         x.closed[] = true
 else
-        @atomic :monotonic x.closed = true
+        @atomic :release x.closed = true
 end
         Base.notify_error(x.cond, excp)
     end
@@ -75,7 +80,8 @@ function check_closed(x::OrderedSynchronizer)
 else
         !(@atomic :acquire x.closed) && Base.concurrency_violation()
 end
-        throw(closed_exception())
+        excp = x.excp
+        throw(excp === nothing ? closed_exception() : excp)
     end
 end
 
@@ -102,29 +108,28 @@ end
 
 The `incr` argument controls how much the synchronizer's state is
 incremented after `f` is called. By default, `incr` is 1.
+
+If `f` throws, `put!` closes `x` with that exception and rethrows it, so
+waiting and later `put!` calls throw it too instead of waiting forever.
 """
 function Base.put!(f, x::OrderedSynchronizer, i, incr=1)
     check_closed(x)
-    err = Base.@lock x.cond begin
+    Base.@lock x.cond begin
         # wait until we're ready to execute f
         while x.i != i
             check_closed(x)
             wait(x.cond)
         end
         check_closed(x)
-        caught = try
+        try
             f()
-            nothing
         catch e
-            e
+            # later steps can never run in order, so fail them now rather than leave them waiting
+            e isa Exception ? close(x, e) : close(x)
+            rethrow()
         end
-        if caught === nothing
-            x.i += incr
-            notify(x.cond)
-        end
-        caught
+        x.i += incr
+        notify(x.cond)
     end
-    # This task never resumes after `throwto`, so it must not hold the lock.
-    err === nothing || Base.throwto(x.coordinating_task, err)
     return nothing
 end
