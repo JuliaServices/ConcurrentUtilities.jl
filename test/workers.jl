@@ -49,6 +49,8 @@ using Test, IOCapture, Random
         end
         ret = remote_fetch(w, expr)
         @test ret == 101
+        # a bare Symbol is an expression too
+        @test remote_fetch(w, :x) == 101
         @test isempty(w.futures) # should be empty since we're not waiting for a response
         # now fetch the remote value
         expr = quote
