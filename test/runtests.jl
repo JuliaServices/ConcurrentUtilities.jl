@@ -134,6 +134,15 @@ using Test, ConcurrentUtilities
         ran = Ref(false)
         put!(() -> (ran[] = true), y, 1)
         @test ran[]
+
+        # reset! wakes a put! that is already waiting for the new state
+        z = OrderedSynchronizer(3)
+        t = Threads.@spawn put!(() -> nothing, z, 1)
+        @test timedwait(() -> Base.@lock(z.cond, !isempty(z.cond)), 10) == :ok
+        reset!(z)
+        @test timedwait(() -> istaskdone(t), 10) == :ok
+        @test istaskdone(t) && !istaskfailed(t)
+        @test z.i == 2
     end
 
     @testset "ReadWriteLock" begin
