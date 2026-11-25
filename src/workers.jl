@@ -9,7 +9,7 @@ import ..try_with_timeout
 # RPC framework
 struct Request
     mod::Symbol # module in which we should eval
-    expr::Expr # expression to eval
+    expr::Any # expression to eval: an Expr, Symbol, or literal
     id::UInt64 # unique id for this request
     # if true, worker should terminate immediately after receiving this Request
     # ignoring other fields
@@ -338,7 +338,7 @@ Start evaluating `expr` in module `mod` on the worker and return a future; `fetc
 for the value, or to rethrow the worker's error. `mod` must be loaded in the worker.
 Without `mod`, a `begin ... end` block is evaluated as top-level code.
 """
-remote_eval(w::Worker, expr) = remote_eval(w, Main, expr.head == :block ? Expr(:toplevel, expr.args...) : expr)
+remote_eval(w::Worker, expr) = remote_eval(w, Main, Meta.isexpr(expr, :block) ? Expr(:toplevel, expr.args...) : expr)
 
 function remote_eval(w::Worker, mod, expr)
     terminated(w) && throw(WorkerTerminatedException(w))
