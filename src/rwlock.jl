@@ -138,7 +138,21 @@ function Base.lock(rw::ReadWriteLock)
         # notified when the last reader unlocks; if the last reader happens
         # to be racing with us, then `writeready` will already be set and
         # we'll proceed immediately
-        wait(rw.writeready)
+        try
+            wait(rw.writeready)
+        catch
+            # Readers already count this writer as pending and new readers are queued
+            # behind it, so it cannot withdraw. If the wait is interrupted or cancelled,
+            # wait (uncancellably on Julia 1.14+) for the active readers to finish, then
+            # release the write side so queued readers and later writers can proceed.
+            @static if hasmethod(wait, Tuple{Threads.Event}, (:cancel,))
+                wait(rw.writeready; cancel=nothing)
+            else
+                wait(rw.writeready)
+            end
+            unlock(rw)
+            rethrow()
+        end
     end
     return
 end
