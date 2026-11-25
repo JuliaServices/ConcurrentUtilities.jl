@@ -33,6 +33,20 @@ function cleanup_lock(f, l)
     end
 end
 
+"""
+    cleanup_wait(ev::Threads.Event)
+
+Like `wait(ev)`, but the wait cannot be cancelled. Julia 1.14+ cancellation makes `wait`
+throw in a cancelled task, which would skip cleanup that must wait for `ev` first.
+"""
+function cleanup_wait(ev::Threads.Event)
+    @static if hasmethod(wait, Tuple{Threads.Event}, (:cancel,))
+        wait(ev; cancel=nothing)
+    else
+        wait(ev)
+    end
+end
+
 include("try_with_timeout.jl")
 include("workers.jl")
 using .Workers

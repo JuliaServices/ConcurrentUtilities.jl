@@ -143,13 +143,9 @@ function Base.lock(rw::ReadWriteLock)
         catch
             # Readers already count this writer as pending and new readers are queued
             # behind it, so it cannot withdraw. If the wait is interrupted or cancelled,
-            # wait (uncancellably on Julia 1.14+) for the active readers to finish, then
-            # release the write side so queued readers and later writers can proceed.
-            @static if hasmethod(wait, Tuple{Threads.Event}, (:cancel,))
-                wait(rw.writeready; cancel=nothing)
-            else
-                wait(rw.writeready)
-            end
+            # wait for the active readers to finish, then release the write side so
+            # queued readers and later writers can proceed.
+            cleanup_wait(rw.writeready)
             unlock(rw)
             rethrow()
         end
