@@ -100,6 +100,9 @@ using Test, IOCapture, Random
     end
 end
 
+# a type the worker process does not have
+struct OnlyOnCoordinator end
+
 @testset "requests fail independently" begin
     # bounded fetch, so a regression fails the test instead of hanging the suite
     function fetchwithin(fut, secs=60)
@@ -125,6 +128,12 @@ end
     @test occursin("could not serialize", err.msg)
     # so does a request the coordinator cannot serialize
     @test fetchwithin(remote_eval(w, Expr(:call, :identity, current_task()))) isa CapturedException
+    # a result the coordinator cannot deserialize, such as a function defined on the
+    # worker, fails only that request
+    @test fetchwithin(remote_eval(w, :(onlyonworker(x) = x + 1))) isa CapturedException
+    @test fetchwithin(remote_eval(w, :(onlyonworker(1)))) == 2
+    # so does a request the worker cannot deserialize
+    @test fetchwithin(remote_eval(w, Expr(:call, :identity, OnlyOnCoordinator()))) isa CapturedException
     @test fetchwithin(remote_eval(w, :(1 + 2))) == 3
     @test !Workers.terminated(w)
     close(w)
