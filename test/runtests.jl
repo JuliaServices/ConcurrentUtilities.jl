@@ -427,6 +427,29 @@ else
         @test rw.readerrelease == 0
         @test lock(() -> true, rw)
         @test readlock(() -> true, rw)
+
+        # A pending writer whose wait for active readers throws must still wait for
+        # them, then release the write side to queued readers and later writers.
+        rw = ReadWriteLock()
+        readlock(rw)
+        interrupted = @async (lock(rw); unlock(rw); true)
+        while isempty(rw.writeready.notify)
+            yield()
+        end
+        queued = @async (readlock(rw); readunlock(rw); true)
+        while (@atomic rw.readercount) != -ConcurrentUtilities.MaxReaders + 2
+            yield()
+        end
+        Base.@lock rw.writeready.notify notify(rw.writeready.notify, ErrorException("interrupt"), false, true)
+        while isempty(rw.writeready.notify) && !istaskdone(interrupted)
+            yield()
+        end
+        @test !istaskdone(interrupted) # still waiting for the active reader
+        readunlock(rw)
+        @test_throws TaskFailedException wait(interrupted)
+        @test timedwait(() -> istaskdone(queued), 10) == :ok && fetch(queued)
+        @test !islocked(rw)
+        @test trylock(rw) && (unlock(rw); true)
         @test !islocked(rw)
 
         # A pending reader whose slow-path wait throws after a writer released
@@ -516,6 +539,24 @@ else
         @test lock(() -> true, rw)
         @test readlock(() -> true, rw)
         @test !islocked(rw)
+
+        # real cancellation of a writer waiting for an active reader
+        rw = ReadWriteLock()
+        readlock(rw)
+        source = Base.CancellationTokenSource()
+        cancelled = Base.ScopedValues.with(
+            () -> Threads.@spawn(lock(rw)),
+            Base.CANCEL_TOKEN => Base.CancellationToken(source),
+        )
+        while Base.@lock(rw.writeready.notify, isempty(rw.writeready.notify))
+            yield()
+        end
+        Base.cancel!(source)
+        readunlock(rw)
+        @test timedwait(() -> istaskdone(cancelled), 5) == :ok
+        @test_throws TaskFailedException wait(cancelled)
+        @test !islocked(rw)
+        @test trylock(rw) && (unlock(rw); true)
 end
 end # @static if VERSION < v"1.8"
     end
