@@ -38,7 +38,7 @@ end
 """
     reset!(x::OrderedSynchronizer, i=1)
 
-Reset the state of `x` to `i`.
+Reset the state of `x` to `i`, waking any `put!` already waiting for `i`.
 """
 function reset!(x::OrderedSynchronizer, i=1)
     Base.@lock x.cond begin
@@ -49,7 +49,9 @@ function reset!(x::OrderedSynchronizer, i=1)
 else
         @atomic :monotonic x.closed = false
 end
+        notify(x.cond)
     end
+    return
 end
 
 function Base.close(x::OrderedSynchronizer, excp::Exception=closed_exception())
