@@ -82,12 +82,27 @@ end
 
 terminated(w::Worker) = @atomicget(w.terminated)
 
-# Serialize `x` to bytes up front: a failure then leaves nothing on the shared pipe, and
+# A message on the pipe is the request id, the payload length, and `x` serialized as the
+# payload. Serializing up front means a failure leaves nothing on the shared pipe, and
 # each message goes out in a single `write`, which concurrent writers cannot interleave.
-function serialized(x)
+function message(id::UInt64, x)
     io = IOBuffer()
+    write(io, id, UInt64(0)) # the length is filled in once the payload is written
     serialize(io, x)
+    n = position(io) - 16
+    seek(io, 8)
+    write(io, UInt64(n))
     return take!(io)
+end
+
+# Read one whole message. The caller deserializes the payload separately, so a payload
+# it cannot deserialize fails only that request and the pipe stays at a message boundary.
+function readmessage(io)
+    id = read(io, UInt64)
+    n = Int(read(io, UInt64))
+    payload = read(io, n)
+    length(payload) == n || throw(EOFError())
+    return id, payload
 end
 
 """
@@ -142,7 +157,7 @@ a worker that does not respond.
 function Base.close(w::Worker)
     if !terminated(w) && isopen(w.pipe)
         req = Request(Symbol(), :(), UInt64(0), true)
-        write(w.pipe, serialized(req))
+        write(w.pipe, message(req.id, req))
     end
     wait(w)
     return
@@ -271,7 +286,13 @@ function process_responses(w::Worker)
     try
         while isopen(w.pipe) && !@atomicget(w.terminated)
             # get the next Response from the worker
-            r = deserialize(w.pipe)
+            id, payload = readmessage(w.pipe)
+            r = try
+                deserialize(IOBuffer(payload))
+            catch e
+                # e.g. a value whose type exists only on the worker: fail just this request
+                Response(nothing, CapturedException(e, catch_backtrace()), id)
+            end
             @assert r isa Response "Received invalid response from worker $(w.pid): $(r)"
             # println("Received response $(r) from worker $(w.pid)")
             Base.@lock lock begin
@@ -307,7 +328,7 @@ function process_work(w::Worker)
             # a request that cannot be serialized fails alone instead of leaving a
             # partial message on the pipe
             bytes = try
-                serialized(req)
+                message(req.id, req)
             catch e
                 close(fut.value, CapturedException(e, catch_backtrace()))
                 continue
@@ -408,25 +429,29 @@ end
 function serve_requests(io)
     iolock = ReentrantLock()
     while true
-        req = deserialize(io)
-        @assert req isa Request
-        req.shutdown && break
+        id, payload = readmessage(io)
+        req = try
+            deserialize(IOBuffer(payload))
+        catch e
+            # e.g. a value whose type exists only on the coordinator: fail just this request
+            CapturedException(e, catch_backtrace())
+        end
+        req isa Request && req.shutdown && break
         # println("received request: $(req)")
         Threads.@spawn begin
             r = $req
             local resp
             try
-                result = execute(r)
-                resp = Response(result, nothing, r.id)
+                resp = r isa Request ? Response(execute(r), nothing, $id) : Response(nothing, r, $id)
             catch e
-                resp = Response(nothing, CapturedException(e, catch_backtrace()), r.id)
+                resp = Response(nothing, CapturedException(e, catch_backtrace()), $id)
             finally
                 bytes = try
-                    serialized(resp)
+                    message($id, resp)
                 catch e
                     # the result (or its error) cannot be serialized: fail just this request
                     msg = "worker could not serialize the response: " * sprint(showerror, e)
-                    serialized(Response(nothing, ErrorException(msg), r.id))
+                    message($id, Response(nothing, ErrorException(msg), $id))
                 end
                 Base.@lock iolock begin
                     # println("sending response: $(resp)")
